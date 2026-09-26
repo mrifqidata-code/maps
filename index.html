@@ -103,6 +103,15 @@
       </div>
       <p id="srcStatus" class="small status"></p>
 
+      <h2>Server geocoding</h2>
+      <label for="selProvider" class="lbl">Server yang dipakai</label>
+      <select id="selProvider">
+        <option value="auto">Otomatis — Nominatim, pindah ke Photon bila ditolak</option>
+        <option value="nominatim">Nominatim saja</option>
+        <option value="photon">Photon saja</option>
+      </select>
+      <p class="small muted">Keduanya gratis, tanpa API key, dan memakai data OpenStreetMap. Nominatim sering memblokir IP sementara (± 20 jam), terutama di jaringan seluler yang IP-nya dipakai bersama.</p>
+
       <h2>Cache geocoding</h2>
       <p class="small">Hasil geocoding disimpan di browser ini supaya tidak perlu diulang. Anda bisa geocoding di laptop, ekspor cache, lalu impor di HP.</p>
       <p id="cacheInfo" class="small muted"></p>

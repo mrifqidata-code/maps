@@ -233,7 +233,7 @@ dialog::backdrop { background: rgba(0,0,0,.45); }
 .dlg h2 { font-size: 16px; color: var(--ink); margin-top: 6px; }
 .dlg p { margin: 0; }
 .dlg .lbl { font-size: 13px; font-weight: 600; margin-top: 4px; }
-.dlg input[type="url"] {
+.dlg select, .dlg input[type="url"] {
   font: inherit; font-size: 14px; padding: 10px 12px; border-radius: 10px; width: 100%;
   border: 1px solid var(--line); background: var(--bg); color: var(--ink);
 }

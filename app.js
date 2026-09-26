@@ -25,6 +25,7 @@ const MONTH_COLORS = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#0
 const BULAN = ['Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun', 'Jul', 'Agu', 'Sep', 'Okt', 'Nov', 'Des'];
 
 const NOMINATIM = 'https://nominatim.openstreetmap.org';
+const PHOTON = 'https://photon.komoot.io';
 const REQ_INTERVAL = 1100;            // kebijakan Nominatim: maks 1 request/detik
 const CENTER_BOX_DEG = 0.3;           // ±0.3° (~33 km) di sekitar center untuk pencarian pertama
 const WIDE_BOX = [106.30, -5.95, 107.35, -6.75]; // Jabodetabek (lon1, lat1, lon2, lat2)
@@ -294,49 +295,68 @@ function buildCandidates(addr) {
   });
 }
 
-// ---------------------------------------------------------------- Nominatim
+// ---------------------------------------------------------------- geocoding (Nominatim / Photon)
 
 class NetError extends Error {}
 class PauseSignal extends Error {}
+class SwitchSignal extends Error {}
 let lastReq = 0;
 
 const FETCH_TIMEOUT = 20000;
 const MAX_ATTEMPTS = 4;
+const PROVIDER_NAMES = { nominatim: 'Nominatim', photon: 'Photon' };
+
+// mode: 'auto' (Nominatim, pindah ke Photon bila ditolak) | 'nominatim' | 'photon'
+const geo = { mode: 'auto', current: 'nominatim', notice: '' };
+function setGeoMode(mode) {
+  geo.mode = ['auto', 'nominatim', 'photon'].includes(mode) ? mode : 'auto';
+  geo.current = geo.mode === 'photon' ? 'photon' : 'nominatim';
+  geo.notice = '';
+}
 
 async function fetchWithTimeout(url) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT);
   try {
-    return await fetch(url, { headers: { Accept: 'application/json' }, signal: ctrl.signal });
+    // Nominatim hanya mengirim header CORS bila request membawa Referer.
+    return await fetch(url, {
+      headers: { Accept: 'application/json' },
+      signal: ctrl.signal,
+      referrerPolicy: 'strict-origin-when-cross-origin',
+    });
   } finally {
     clearTimeout(timer);
   }
 }
 
-async function nominatim(path, params) {
-  const url = `${NOMINATIM}${path}?${new URLSearchParams(params)}`;
+async function apiGet(provider, url) {
+  const name = PROVIDER_NAMES[provider];
   for (let attempt = 1; ; attempt++) {
     const wait = lastReq + REQ_INTERVAL - Date.now();
     if (wait > 0) await sleep(wait);
     lastReq = Date.now();
     let res;
     let problem;
+    let refused = false; // server menolak kita (blokir/limit), bukan sekadar gangguan sesaat
     try {
       res = await fetchWithTimeout(url);
-      if (res.status === 429) problem = 'Nominatim membatasi request (HTTP 429)';
-      else if (res.status >= 500) problem = `Server Nominatim sedang bermasalah (HTTP ${res.status})`;
-      else if (!res.ok) {
-        throw new NetError(`Nominatim menolak request (HTTP ${res.status}). Coba lagi nanti atau dari jaringan lain.`);
-      }
+      if (res.status === 429 || res.status === 403) { problem = `${name} menolak/membatasi akses (HTTP ${res.status})`; refused = true; }
+      else if (res.status >= 500) problem = `Server ${name} sedang bermasalah (HTTP ${res.status})`;
+      else if (!res.ok && res.status !== 400) problem = `${name} menolak request (HTTP ${res.status})`;
     } catch (e) {
-      if (e instanceof NetError) throw e;
-      problem = e && e.name === 'AbortError'
-        ? `Nominatim tidak merespons dalam ${FETCH_TIMEOUT / 1000} detik`
-        : (navigator.onLine === false ? 'HP sedang offline' : 'Tidak bisa terhubung ke Nominatim (koneksi terputus, diblokir jaringan/ad-blocker, atau sedang dibatasi)');
+      if (e && e.name === 'AbortError') problem = `${name} tidak merespons dalam ${FETCH_TIMEOUT / 1000} detik`;
+      else if (navigator.onLine === false) problem = 'HP sedang offline';
+      else {
+        // Nominatim tidak mengirim header CORS saat memblokir (403/429), jadi browser hanya melihat "gagal terhubung".
+        problem = `Tidak bisa terhubung ke ${name} (kemungkinan IP/jaringan sedang diblokir, atau ada ad-blocker)`;
+        refused = true;
+      }
     }
     if (!problem) {
-      try { return await res.json(); } catch { problem = 'Respons Nominatim tidak valid'; }
+      if (res.status === 400) return null; // query tidak valid → anggap tidak ketemu
+      try { return await res.json(); } catch { problem = `Respons ${name} tidak valid`; }
     }
+    if (provider === 'nominatim' && geo.mode === 'auto' && (refused || attempt >= 2)) throw new SwitchSignal(problem);
     if (attempt >= MAX_ATTEMPTS) throw new NetError(`${problem}.`);
     const delay = (res && res.status === 429 ? 30000 : 5000) * attempt;
     await countdown(delay, (sec) => setLive(`${problem}. Mencoba lagi dalam ${sec} dtk (percobaan ${attempt + 1}/${MAX_ATTEMPTS})…`, true));
@@ -352,12 +372,66 @@ async function countdown(ms, onTick) {
   }
 }
 
+// --- Nominatim
+
 function adminParts(a = {}) {
   const kel = a.village || a.suburb || a.quarter || a.neighbourhood || a.hamlet || '';
   const kec = a.city_district || (a.village && a.suburb) || a.town || '';
   const city = a.city || a.county || a.municipality || a.state_district || a.state || '';
   return { kel, kec: kec === kel ? '' : kec, city };
 }
+
+const nominatimProvider = {
+  async search(q, box) {
+    const hits = await apiGet('nominatim', `${NOMINATIM}/search?${new URLSearchParams({
+      q, format: 'jsonv2', addressdetails: 1, limit: 1, countrycodes: 'id',
+      'accept-language': 'id', viewbox: box.join(','), bounded: 1,
+    })}`);
+    const hit = hits && hits[0];
+    if (!hit) return null;
+    return { lat: +hit.lat, lon: +hit.lon, coarse: COARSE_TYPES.has(hit.addresstype), parts: adminParts(hit.address) };
+  },
+  async reverse(lat, lon) {
+    const rev = await apiGet('nominatim', `${NOMINATIM}/reverse?${new URLSearchParams({
+      lat, lon, format: 'jsonv2', zoom: 17, addressdetails: 1, 'accept-language': 'id',
+    })}`);
+    return rev && rev.address ? adminParts(rev.address) : null;
+  },
+};
+
+// --- Photon (komoot) — data OpenStreetMap, tanpa API key, CORS terbuka
+
+const PHOTON_COARSE = new Set(['city', 'county', 'state', 'country']);
+function photonParts(p = {}, includeName) {
+  // Urutan dari paling spesifik ke paling umum; yang terakhir = kota/kabupaten.
+  const levels = [];
+  if (includeName && (p.type === 'locality' || p.type === 'district') && p.name) levels.push(p.name);
+  for (const k of ['locality', 'district', 'city', 'county']) if (p[k]) levels.push(p[k]);
+  const uniq = [...new Set(levels)];
+  const city = uniq.length ? uniq[uniq.length - 1] : (p.state || '');
+  const lower = uniq.slice(0, -1);
+  return { kel: lower[0] || '', kec: lower.length >= 2 ? lower[1] : '', city };
+}
+
+const photonProvider = {
+  async search(q, box) {
+    const bbox = [Math.min(box[0], box[2]), Math.min(box[1], box[3]), Math.max(box[0], box[2]), Math.max(box[1], box[3])];
+    const data = await apiGet('photon', `${PHOTON}/api/?${new URLSearchParams({ q, limit: 1, bbox: bbox.join(',') })}`);
+    const f = data && data.features && data.features[0];
+    if (!f || !f.geometry) return null;
+    const p = f.properties || {};
+    if (p.countrycode && p.countrycode.toUpperCase() !== 'ID') return null;
+    const [lon, lat] = f.geometry.coordinates;
+    return { lat, lon, coarse: PHOTON_COARSE.has(p.type), parts: photonParts(p, true) };
+  },
+  async reverse(lat, lon) {
+    const data = await apiGet('photon', `${PHOTON}/reverse?${new URLSearchParams({ lat, lon, limit: 1, radius: 1 })}`);
+    const f = data && data.features && data.features[0];
+    return f ? photonParts(f.properties, true) : null;
+  },
+};
+
+const PROVIDERS = { nominatim: nominatimProvider, photon: photonProvider };
 
 async function geocodeAddress(addr, center, manualQuery) {
   const c = CENTERS[center];
@@ -374,30 +448,27 @@ async function geocodeAddress(addr, center, manualQuery) {
       if (cands[1] && cands[1].level === 'area') tries.push({ ...cands[1], box: WIDE_BOX });
     }
   }
+  const src = geo.current;
+  const provider = PROVIDERS[src];
   const seen = new Set();
   for (const t of tries) {
     const sig = `${t.q}|${t.box.join(',')}`;
     if (seen.has(sig)) continue;
     seen.add(sig);
     setLive(`Mencari: ${t.q}`);
-    const hits = await nominatim('/search', {
-      q: t.q, format: 'jsonv2', addressdetails: 1, limit: 1, countrycodes: 'id',
-      'accept-language': 'id', viewbox: t.box.join(','), bounded: 1,
-    });
-    const hit = hits && hits[0];
-    if (!hit || COARSE_TYPES.has(hit.addresstype)) continue;
-    const lat = +hit.lat;
-    const lon = +hit.lon;
-    let parts = adminParts(hit.address);
+    const hit = await provider.search(t.q, t.box);
+    if (!hit || hit.coarse || !Number.isFinite(hit.lat) || !Number.isFinite(hit.lon)) continue;
+    let parts = hit.parts;
     if (!parts.kel) {
-      const rev = await nominatim('/reverse', {
-        lat, lon, format: 'jsonv2', zoom: 17, addressdetails: 1, 'accept-language': 'id',
-      }).catch((e) => { if (e instanceof NetError || e instanceof PauseSignal) throw e; return null; });
-      if (rev && rev.address) parts = adminParts(rev.address);
+      const rev = await provider.reverse(hit.lat, hit.lon).catch((e) => {
+        if (e instanceof NetError || e instanceof PauseSignal || e instanceof SwitchSignal) throw e;
+        return null;
+      });
+      if (rev && rev.kel) parts = rev;
     }
-    return { v: CACHE_VERSION, status: 'ok', lat, lon, ...parts, level: t.level, q: t.q, t: Date.now() };
+    return { v: CACHE_VERSION, status: 'ok', lat: hit.lat, lon: hit.lon, ...parts, level: t.level, q: t.q, src, t: Date.now() };
   }
-  return { v: CACHE_VERSION, status: 'fail', tried: [...new Set(tries.map((t) => t.q))], manual: manualQuery || '', t: Date.now() };
+  return { v: CACHE_VERSION, status: 'fail', tried: [...new Set(tries.map((t) => t.q))], manual: manualQuery || '', src, t: Date.now() };
 }
 
 // ---------------------------------------------------------------- antrean geocoding
@@ -440,10 +511,18 @@ async function runQueue() {
         queue.items.unshift(it);
         break;
       }
+      if (e instanceof SwitchSignal) {
+        geo.current = 'photon';
+        geo.notice = `${e.message}. Beralih otomatis ke Photon (server geocoding OpenStreetMap lain).`;
+        setNote(geo.notice);
+        queue.items.unshift(it);
+        continue;
+      }
       if (e instanceof NetError) {
         queue.items.unshift(it);
         queue.paused = true;
         queue.error = `${e.message} Geocoding dijeda — periksa koneksi lalu tekan Lanjutkan (lanjut otomatis saat koneksi kembali).`;
+        if (geo.current === 'photon' && geo.mode === 'auto') queue.error += ' Nominatim juga sebelumnya gagal, jadi kemungkinan jaringan/browser ini memblokir kedua server — coba jaringan lain (mis. Wi-Fi) atau browser lain.';
         break;
       }
       res = { v: CACHE_VERSION, status: 'fail', tried: [], t: Date.now() };
@@ -521,10 +600,11 @@ function renderProgress() {
     : `Geocoding dijeda (${pct}%)`;
   $('#progDetail').textContent =
     `${fmtInt(queue.done)} / ${fmtInt(queue.total)} alamat unik · ${fmtInt(queue.ok)} berhasil · ${fmtInt(queue.fail)} gagal` +
-    (queue.items.length ? ` · sisa ± ${fmtDuration(eta)}` : '');
+    (queue.items.length ? ` · sisa ± ${fmtDuration(eta)}` : '') + ` · via ${PROVIDER_NAMES[geo.current]}`;
   $('#btnPause').textContent = queue.running ? 'Jeda' : 'Lanjutkan';
   el.classList.toggle('error', !!queue.error);
   if (queue.error) setNote(queue.error);
+  else if (geo.notice) setNote(geo.notice);
   else if (queue.running && !$('#progNote').textContent) setNote('Biarkan halaman ini tetap terbuka dan layar menyala. Hasil tersimpan otomatis, jadi aman jika terputus.');
   document.title = queue.running ? `(${pct}%) Sebaran Member` : 'Sebaran Member';
 }
@@ -1039,6 +1119,16 @@ function bindEvents() {
     } catch (err) { setSrcStatus(err.message, true); }
     e.target.value = '';
   });
+  $('#selProvider').addEventListener('change', async (e) => {
+    store.set('geoProvider', e.target.value);
+    const wasRunning = queue.running || queue.items.length > 0;
+    queue.paused = true;
+    while (queue.running) await sleep(200);
+    setGeoMode(e.target.value);
+    queue.error = '';
+    renderProgress();
+    if (wasRunning && queue.items.length) runQueue();
+  });
   $('#btnExport').addEventListener('click', () => {
     const data = { app: 'sebaran-member', version: CACHE_VERSION, exported: new Date().toISOString(), entries: Object.fromEntries(cache) };
     const blob = new Blob([JSON.stringify(data)], { type: 'application/json' });
@@ -1116,6 +1206,8 @@ function flash(btn, text) {
 // ---------------------------------------------------------------- start
 
 async function main() {
+  setGeoMode(store.get('geoProvider'));
+  $('#selProvider').value = geo.mode;
   const savedCenter = store.get('center');
   if (savedCenter && (savedCenter === 'ALL' || CENTERS[savedCenter])) state.center = savedCenter;
   initMap();

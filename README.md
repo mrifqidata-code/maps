@@ -27,6 +27,10 @@ Nominatim (gratis, tanpa API key) membatasi **1 request per detik**, jadi geocod
 - **Tip:** jalankan geocoding pertama di laptop (layar tidak mati), lalu *Data → Ekspor cache*, dan di HP *Data → Impor cache*.
 - Data baru di sheet? Cukup buka ulang app: hanya alamat baru yang di-geocode.
 
+### Server geocoding: Nominatim & Photon
+
+Default-nya **Otomatis**: memakai Nominatim, dan jika Nominatim menolak akses (mis. IP diblokir sementara ± 20 jam, sering terjadi di jaringan seluler yang IP-nya dipakai bersama), app otomatis beralih ke [Photon](https://photon.komoot.io) (komoot). Photon juga gratis, tanpa API key, dan memakai data OpenStreetMap. Pilihan bisa diubah di *Data → Server geocoding*. Catatan: nama kelurahan dari Photon bisa sedikit kurang presisi dibanding Nominatim.
+
 ### Cara alamat dicocokkan
 
 1. Alamat dibersihkan (RT/RW, nomor rumah, blok, kode pos dibuang; singkatan seperti `Jl.`, `Gg.`, `Komp.`, `Pd.` diperluas).
