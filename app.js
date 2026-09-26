@@ -51,7 +51,7 @@ const state = {
 };
 const cache = new Map();                // key -> hasil geocoding
 const queue = { items: [], running: false, paused: false, total: 0, done: 0, ok: 0, fail: 0,
-  durations: [], error: '', manual: new Map() };
+  durations: [], error: '' };
 
 const $ = (s) => document.querySelector(s);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -297,31 +297,58 @@ function buildCandidates(addr) {
 // ---------------------------------------------------------------- Nominatim
 
 class NetError extends Error {}
+class PauseSignal extends Error {}
 let lastReq = 0;
+
+const FETCH_TIMEOUT = 20000;
+const MAX_ATTEMPTS = 4;
+
+async function fetchWithTimeout(url) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT);
+  try {
+    return await fetch(url, { headers: { Accept: 'application/json' }, signal: ctrl.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 async function nominatim(path, params) {
   const url = `${NOMINATIM}${path}?${new URLSearchParams(params)}`;
-  for (let attempt = 0; ; attempt++) {
+  for (let attempt = 1; ; attempt++) {
     const wait = lastReq + REQ_INTERVAL - Date.now();
     if (wait > 0) await sleep(wait);
     lastReq = Date.now();
     let res;
+    let problem;
     try {
-      res = await fetch(url, { headers: { Accept: 'application/json' } });
-    } catch {
-      if (attempt >= 3) throw new NetError('Tidak bisa terhubung ke server geocoding.');
-      await sleep(4000 * (attempt + 1));
-      continue;
+      res = await fetchWithTimeout(url);
+      if (res.status === 429) problem = 'Nominatim membatasi request (HTTP 429)';
+      else if (res.status >= 500) problem = `Server Nominatim sedang bermasalah (HTTP ${res.status})`;
+      else if (!res.ok) {
+        throw new NetError(`Nominatim menolak request (HTTP ${res.status}). Coba lagi nanti atau dari jaringan lain.`);
+      }
+    } catch (e) {
+      if (e instanceof NetError) throw e;
+      problem = e && e.name === 'AbortError'
+        ? `Nominatim tidak merespons dalam ${FETCH_TIMEOUT / 1000} detik`
+        : (navigator.onLine === false ? 'HP sedang offline' : 'Tidak bisa terhubung ke Nominatim (koneksi terputus, diblokir jaringan/ad-blocker, atau sedang dibatasi)');
     }
-    if (res.status === 429 || res.status >= 500) {
-      if (attempt >= 3) throw new NetError(`Server geocoding sibuk (HTTP ${res.status}).`);
-      setNote(`Server geocoding membatasi request, menunggu ${30 * (attempt + 1)} detik…`);
-      await sleep(30000 * (attempt + 1));
-      setNote('');
-      continue;
+    if (!problem) {
+      try { return await res.json(); } catch { problem = 'Respons Nominatim tidak valid'; }
     }
-    if (!res.ok) throw new NetError(`Server geocoding menolak request (HTTP ${res.status}).`);
-    return res.json();
+    if (attempt >= MAX_ATTEMPTS) throw new NetError(`${problem}.`);
+    const delay = (res && res.status === 429 ? 30000 : 5000) * attempt;
+    await countdown(delay, (sec) => setLive(`${problem}. Mencoba lagi dalam ${sec} dtk (percobaan ${attempt + 1}/${MAX_ATTEMPTS})…`, true));
+    if (queue.paused) throw new PauseSignal();
+  }
+}
+
+async function countdown(ms, onTick) {
+  const end = Date.now() + ms;
+  while (Date.now() < end && !queue.paused) {
+    onTick(Math.ceil((end - Date.now()) / 1000));
+    await sleep(Math.min(1000, end - Date.now()));
   }
 }
 
@@ -352,6 +379,7 @@ async function geocodeAddress(addr, center, manualQuery) {
     const sig = `${t.q}|${t.box.join(',')}`;
     if (seen.has(sig)) continue;
     seen.add(sig);
+    setLive(`Mencari: ${t.q}`);
     const hits = await nominatim('/search', {
       q: t.q, format: 'jsonv2', addressdetails: 1, limit: 1, countrycodes: 'id',
       'accept-language': 'id', viewbox: t.box.join(','), bounded: 1,
@@ -364,7 +392,7 @@ async function geocodeAddress(addr, center, manualQuery) {
     if (!parts.kel) {
       const rev = await nominatim('/reverse', {
         lat, lon, format: 'jsonv2', zoom: 17, addressdetails: 1, 'accept-language': 'id',
-      }).catch((e) => { if (e instanceof NetError) throw e; return null; });
+      }).catch((e) => { if (e instanceof NetError || e instanceof PauseSignal) throw e; return null; });
       if (rev && rev.address) parts = adminParts(rev.address);
     }
     return { v: CACHE_VERSION, status: 'ok', lat, lon, ...parts, level: t.level, q: t.q, t: Date.now() };
@@ -408,10 +436,14 @@ async function runQueue() {
     try {
       res = await geocodeAddress(it.addr, it.center, it.manual);
     } catch (e) {
+      if (e instanceof PauseSignal) {
+        queue.items.unshift(it);
+        break;
+      }
       if (e instanceof NetError) {
         queue.items.unshift(it);
         queue.paused = true;
-        queue.error = `${e.message} Geocoding dijeda — periksa koneksi lalu tekan Lanjutkan.`;
+        queue.error = `${e.message} Geocoding dijeda — periksa koneksi lalu tekan Lanjutkan (lanjut otomatis saat koneksi kembali).`;
         break;
       }
       res = { v: CACHE_VERSION, status: 'fail', tried: [], t: Date.now() };
@@ -426,10 +458,15 @@ async function runQueue() {
     scheduleRender();
   }
   queue.running = false;
+  setLive('');
   wake.release();
   renderProgress();
   scheduleRender(true);
 }
+
+window.addEventListener('online', () => {
+  if (!queue.running && queue.items.length && queue.error) runQueue();
+});
 
 function enqueueFront(item) {
   queue.items = queue.items.filter((x) => x.key !== item.key);
@@ -461,15 +498,22 @@ function fmtDuration(ms) {
 }
 
 function setNote(text) { $('#progNote').textContent = text; }
+function setLive(text, warn = false) {
+  const el = $('#progLive');
+  el.textContent = text;
+  el.classList.toggle('warn', warn);
+}
 
 function renderProgress() {
   const el = $('#progress');
   const active = queue.total > 0 && (queue.running || queue.items.length > 0);
   el.hidden = !active && !queue.error;
   if (el.hidden) { document.title = 'Sebaran Member'; return; }
-  const pct = queue.total ? Math.floor((queue.done / queue.total) * 100) : 0;
-  $('#progBar').style.width = `${pct}%`;
-  el.querySelector('.bar').setAttribute('aria-valuenow', String(pct));
+  const ratio = queue.total ? queue.done / queue.total : 0;
+  const pctNum = Math.floor(ratio * 1000) / 10;
+  const pct = pctNum.toLocaleString('id-ID', { minimumFractionDigits: pctNum < 10 ? 1 : 0, maximumFractionDigits: pctNum < 10 ? 1 : 0 });
+  $('#progBar').style.width = `${Math.max(ratio * 100, queue.done ? 0.8 : 0)}%`;
+  el.querySelector('.bar').setAttribute('aria-valuenow', String(Math.round(ratio * 100)));
   const avg = queue.durations.length ? queue.durations.reduce((a, b) => a + b, 0) / queue.durations.length : REQ_INTERVAL * 1.5;
   const eta = queue.items.length * avg;
   $('#progTitle').textContent = queue.running
@@ -481,7 +525,7 @@ function renderProgress() {
   $('#btnPause').textContent = queue.running ? 'Jeda' : 'Lanjutkan';
   el.classList.toggle('error', !!queue.error);
   if (queue.error) setNote(queue.error);
-  else if (queue.running && !$('#progNote').textContent) setNote('Biarkan halaman ini tetap terbuka. Hasil tersimpan otomatis, jadi aman jika terputus.');
+  else if (queue.running && !$('#progNote').textContent) setNote('Biarkan halaman ini tetap terbuka dan layar menyala. Hasil tersimpan otomatis, jadi aman jika terputus.');
   document.title = queue.running ? `(${pct}%) Sebaran Member` : 'Sebaran Member';
 }
 

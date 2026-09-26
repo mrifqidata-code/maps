@@ -95,6 +95,9 @@ em { font-style: normal; font-weight: 600; }
 #progBar { height: 100%; width: 0; background: var(--accent); border-radius: 999px; transition: width .4s; }
 .progress-note { margin: 6px 0 0; font-size: 12px; color: var(--muted); }
 .progress-note:empty { display: none; }
+.progress-live { margin: 6px 0 0; font-size: 12px; color: var(--ink2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.progress-live:empty { display: none; }
+.progress-live.warn { color: var(--danger); white-space: normal; }
 .progress.error .progress-note { color: var(--danger); }
 
 main { max-width: 1100px; margin: 0 auto; }
