@@ -1,0 +1,4 @@
+*.csv
+*.xlsx
+geocode-cache*.json
+.DS_Store

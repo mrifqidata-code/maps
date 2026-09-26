@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#2a78d6">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Sebaran Member</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icon.svg">
+  <link rel="stylesheet" href="vendor/leaflet/leaflet.css">
+  <link rel="stylesheet" href="vendor/markercluster/MarkerCluster.css">
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1>Sebaran Member</h1>
+    <button id="btnSettings" class="btn small ghost" type="button">Data</button>
+  </header>
+
+  <div id="progress" class="progress" hidden>
+    <div class="progress-row">
+      <div class="progress-text">
+        <strong id="progTitle">Geocoding alamat…</strong>
+        <span id="progDetail"></span>
+      </div>
+      <button id="btnPause" class="btn small" type="button">Jeda</button>
+    </div>
+    <div class="bar" role="progressbar" aria-labelledby="progTitle" aria-valuemin="0" aria-valuemax="100"><div id="progBar"></div></div>
+    <p id="progNote" class="progress-note"></p>
+  </div>
+
+  <main>
+    <section class="overview" aria-label="Peta sebaran">
+      <div class="controls">
+        <div class="chips" id="centerChips" role="tablist" aria-label="Pilih center"></div>
+        <div class="seg" role="group" aria-label="Mode tampilan peta">
+          <button type="button" data-mode="cluster" class="on">Cluster</button>
+          <button type="button" data-mode="pins">Pin</button>
+          <button type="button" data-mode="heat">Heatmap</button>
+        </div>
+      </div>
+      <div id="map"></div>
+      <div id="legend" class="legend" aria-live="polite"></div>
+    </section>
+
+    <section class="stats" aria-label="Statistik">
+      <div class="cards">
+        <article class="card" id="cardLongest">
+          <h2>Longest range from center</h2>
+          <div class="card-body"><p class="muted">Belum ada data.</p></div>
+        </article>
+        <article class="card" id="cardAvg">
+          <h2>Rata-rata jarak ke center</h2>
+          <div class="card-body"><p class="muted">Belum ada data.</p></div>
+        </article>
+        <article class="card" id="cardCoverage">
+          <h2>Data</h2>
+          <div class="card-body"><p class="muted">Belum ada data.</p></div>
+        </article>
+      </div>
+
+      <article class="panel" id="panelCenters" hidden>
+        <h2>Per center</h2>
+        <div class="table-wrap"><table id="tblCenters"></table></div>
+      </article>
+
+      <article class="panel" id="panelKel">
+        <div class="panel-head">
+          <h2>Member per kelurahan</h2>
+          <input id="kelSearch" type="search" placeholder="Cari kelurahan…" aria-label="Cari kelurahan">
+        </div>
+        <div class="table-wrap"><table id="tblKel"></table></div>
+        <button id="btnKelMore" class="btn ghost full" type="button" hidden></button>
+      </article>
+
+      <article class="panel" id="panelFail">
+        <div class="panel-head">
+          <h2>Alamat gagal di-geocode</h2>
+          <div class="panel-actions">
+            <button id="btnCopyFail" class="btn small ghost" type="button">Salin daftar</button>
+            <button id="btnRetryFail" class="btn small ghost" type="button">Coba ulang semua</button>
+          </div>
+        </div>
+        <p class="muted small">Ketuk <em>Ubah</em> untuk memperbaiki teks pencarian (mis. tambahkan kelurahan/kota), lalu cari ulang.</p>
+        <ul id="failList" class="fail-list"></ul>
+        <button id="btnFailMore" class="btn ghost full" type="button" hidden></button>
+      </article>
+    </section>
+  </main>
+
+  <dialog id="dlgSettings">
+    <form method="dialog" class="dlg">
+      <h2>Sumber data</h2>
+      <p class="small">Di Google Sheet: <b>File → Bagikan → Publikasikan ke web</b>, pilih <b>Sheet1</b> dan format <b>CSV</b>, lalu tempel link-nya di sini. Link hanya disimpan di browser ini.</p>
+      <label for="inpUrl" class="lbl">Link CSV Google Sheet</label>
+      <input id="inpUrl" type="url" inputmode="url" autocomplete="off" placeholder="https://docs.google.com/spreadsheets/d/e/…/pub?output=csv">
+      <div class="dlg-row">
+        <button id="btnLoadUrl" class="btn" type="button">Muat data</button>
+        <label class="btn ghost file-btn">Upload file CSV<input id="inpFile" type="file" accept=".csv,text/csv"></label>
+      </div>
+      <p id="srcStatus" class="small status"></p>
+
+      <h2>Cache geocoding</h2>
+      <p class="small">Hasil geocoding disimpan di browser ini supaya tidak perlu diulang. Anda bisa geocoding di laptop, ekspor cache, lalu impor di HP.</p>
+      <p id="cacheInfo" class="small muted"></p>
+      <div class="dlg-row">
+        <button id="btnExport" class="btn ghost" type="button">Ekspor cache</button>
+        <label class="btn ghost file-btn">Impor cache<input id="inpImport" type="file" accept=".json,application/json"></label>
+        <button id="btnClearCache" class="btn ghost danger" type="button">Hapus cache</button>
+      </div>
+
+      <div class="dlg-foot">
+        <button class="btn" value="close">Tutup</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="vendor/leaflet/leaflet.js"></script>
+  <script src="vendor/markercluster/leaflet.markercluster.js"></script>
+  <script src="vendor/leaflet-heat/leaflet-heat.js"></script>
+  <script src="vendor/papaparse/papaparse.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
