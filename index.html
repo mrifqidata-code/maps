@@ -3,129 +3,190 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#2a78d6">
+  <meta name="theme-color" content="#1c5cab">
   <meta name="robots" content="noindex, nofollow">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Sebaran">
   <title>Sebaran Member</title>
   <link rel="manifest" href="manifest.webmanifest">
-  <link rel="icon" href="icon.svg" type="image/svg+xml">
-  <link rel="apple-touch-icon" href="icon.svg">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
   <link rel="stylesheet" href="vendor/leaflet/leaflet.css">
   <link rel="stylesheet" href="vendor/markercluster/MarkerCluster.css">
   <link rel="stylesheet" href="app.css">
 </head>
 <body>
-  <header class="topbar">
-    <h1>Sebaran Member</h1>
-    <button id="btnSettings" class="btn small ghost" type="button">Data</button>
+  <header class="top">
+    <div class="wrap top-inner">
+      <div class="logo" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s-6.5-5.6-6.5-11a6.5 6.5 0 0 1 13 0c0 5.4-6.5 11-6.5 11z"/><circle cx="12" cy="10" r="2.4"/></svg>
+      </div>
+      <div class="brand">
+        <h1>Sebaran Member</h1>
+        <p>KLM · KWC · PML · BTU · TMP · HIB</p>
+      </div>
+      <span class="sync" id="syncStatus" title="Status penyimpanan data">Memuat…</span>
+      <nav class="tabs" aria-label="Menu utama">
+        <button type="button" data-view="map" aria-current="page"><svg viewBox="0 0 24 24"><path d="M9 4 3 6v14l6-2 6 2 6-2V4l-6 2-6-2z"/><path d="M9 4v14"/><path d="M15 6v14"/></svg>Peta</button>
+        <button type="button" data-view="stats"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>Statistik</button>
+        <button type="button" data-view="kel"><svg viewBox="0 0 24 24"><path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/></svg>Kelurahan</button>
+        <button type="button" data-view="data"><svg viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 11v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></svg>Data<span class="tab-dot" id="dataDot" hidden></span></button>
+      </nav>
+    </div>
   </header>
 
-  <div id="progress" class="progress" hidden>
-    <div class="progress-row">
-      <div class="progress-text">
-        <strong id="progTitle">Geocoding alamat…</strong>
-        <span id="progDetail"></span>
-      </div>
-      <button id="btnPause" class="btn small" type="button">Jeda</button>
+  <div class="filterbar" id="filterbar">
+    <div class="wrap fb">
+      <span class="fb-label">Center</span>
+      <div class="chips" id="centerChips" role="tablist" aria-label="Pilih center"></div>
     </div>
-    <div class="bar" role="progressbar" aria-labelledby="progTitle" aria-valuemin="0" aria-valuemax="100"><div id="progBar"></div></div>
-    <p id="progLive" class="progress-live" aria-live="polite"></p>
-    <p id="progNote" class="progress-note"></p>
   </div>
 
-  <main>
-    <section class="overview" aria-label="Peta sebaran">
-      <div class="controls">
-        <div class="chips" id="centerChips" role="tablist" aria-label="Pilih center"></div>
+  <div id="progress" class="progress" hidden>
+    <div class="wrap">
+      <div class="progress-row">
+        <div class="progress-text">
+          <strong id="progTitle">Geocoding alamat…</strong>
+          <span id="progDetail"></span>
+        </div>
+        <button id="btnPause" class="btn sm" type="button">Jeda</button>
+      </div>
+      <div class="bar" role="progressbar" aria-labelledby="progTitle" aria-valuemin="0" aria-valuemax="100"><div id="progBar"></div></div>
+      <p id="progLive" class="progress-live" aria-live="polite"></p>
+      <p id="progNote" class="progress-note"></p>
+    </div>
+  </div>
+
+  <main class="wrap">
+    <!-- ============ PETA ============ -->
+    <section class="view" id="v-map">
+      <div class="map-head">
+        <div class="kpis-mini" id="miniKpis"></div>
         <div class="seg" role="group" aria-label="Mode tampilan peta">
-          <button type="button" data-mode="cluster" class="on">Cluster</button>
-          <button type="button" data-mode="pins">Pin</button>
-          <button type="button" data-mode="heat">Heatmap</button>
+          <button type="button" data-mode="cluster" aria-pressed="true">Cluster</button>
+          <button type="button" data-mode="pins" aria-pressed="false">Pin</button>
+          <button type="button" data-mode="heat" aria-pressed="false">Heatmap</button>
         </div>
       </div>
-      <div id="map"></div>
+      <div class="map-card">
+        <div id="map"></div>
+      </div>
       <div id="legend" class="legend" aria-live="polite"></div>
     </section>
 
-    <section class="stats" aria-label="Statistik">
-      <div class="cards">
-        <article class="card" id="cardLongest">
-          <h2>Longest range from center</h2>
+    <!-- ============ STATISTIK ============ -->
+    <section class="view" id="v-stats" hidden>
+      <div class="kpis">
+        <article class="kpi" id="cardLongest">
+          <div class="k-label">Longest range from center</div>
           <div class="card-body"><p class="muted">Belum ada data.</p></div>
         </article>
-        <article class="card" id="cardAvg">
-          <h2>Rata-rata jarak ke center</h2>
+        <article class="kpi" id="cardAvg">
+          <div class="k-label">Rata-rata jarak ke center</div>
           <div class="card-body"><p class="muted">Belum ada data.</p></div>
         </article>
-        <article class="card" id="cardCoverage">
-          <h2>Data</h2>
+        <article class="kpi" id="cardCoverage">
+          <div class="k-label">Data</div>
           <div class="card-body"><p class="muted">Belum ada data.</p></div>
         </article>
       </div>
 
-      <article class="panel" id="panelCenters" hidden>
-        <h2>Per center</h2>
-        <div class="table-wrap"><table id="tblCenters"></table></div>
-      </article>
+      <div id="panelCenters" hidden>
+        <div class="sec-head"><h2>Per center</h2><span class="hint">Ketuk baris untuk membuka center di peta</span></div>
+        <div class="table-wrap"><table class="tbl" id="tblCenters"></table></div>
+      </div>
+    </section>
 
-      <article class="panel" id="panelKel">
-        <div class="panel-head">
-          <h2>Member per kelurahan</h2>
-          <input id="kelSearch" type="search" placeholder="Cari kelurahan…" aria-label="Cari kelurahan">
-        </div>
-        <div class="table-wrap"><table id="tblKel"></table></div>
-        <button id="btnKelMore" class="btn ghost full" type="button" hidden></button>
-      </article>
+    <!-- ============ KELURAHAN ============ -->
+    <section class="view" id="v-kel" hidden>
+      <div class="sec-head">
+        <h2>Member per kelurahan</h2>
+        <input id="kelSearch" class="search" type="search" placeholder="Cari kelurahan…" aria-label="Cari kelurahan">
+      </div>
+      <div class="table-wrap"><table class="tbl" id="tblKel"></table></div>
+      <button id="btnKelMore" class="btn full" type="button" hidden></button>
+    </section>
 
-      <article class="panel" id="panelFail">
-        <div class="panel-head">
-          <h2>Alamat gagal di-geocode</h2>
-          <div class="panel-actions">
-            <button id="btnCopyFail" class="btn small ghost" type="button">Salin daftar</button>
-            <button id="btnRetryFail" class="btn small ghost" type="button">Coba ulang semua</button>
+    <!-- ============ DATA ============ -->
+    <section class="view" id="v-data" hidden>
+      <div class="dgrid">
+        <article class="card" id="cardSource">
+          <h2>Sumber data &amp; sinkron</h2>
+          <p>Hubungkan ke Google Sheet lewat <b>Apps Script</b> supaya data member dan hasil geocoding tersimpan di sheet, sehingga <b>sama di HP &amp; laptop</b>. Sheet tidak perlu di-publish ke web. Panduan pasang ada di README repo.</p>
+          <label for="inpScript" class="lbl">Link Web App Apps Script <span class="tag">disarankan</span></label>
+          <input id="inpScript" type="url" inputmode="url" autocomplete="off" placeholder="https://script.google.com/macros/s/…/exec">
+          <div class="actions">
+            <button id="btnConnect" class="btn primary" type="button">Hubungkan</button>
+            <button id="btnSyncNow" class="btn" type="button" hidden>Sinkronkan sekarang</button>
+            <button id="btnDisconnect" class="btn danger" type="button" hidden>Putuskan</button>
           </div>
+          <p id="cloudInfo" class="small muted"></p>
+
+          <details class="alt" id="altSource">
+            <summary>Atau pakai link CSV / file (tanpa sinkron)</summary>
+            <label for="inpUrl" class="lbl">Link CSV Google Sheet (Publikasikan ke web)</label>
+            <input id="inpUrl" type="url" inputmode="url" autocomplete="off" placeholder="https://docs.google.com/spreadsheets/d/e/…/pub?output=csv">
+            <div class="actions">
+              <button id="btnLoadUrl" class="btn" type="button">Muat data</button>
+              <label class="btn file-btn">Upload file CSV<input id="inpFile" type="file" accept=".csv,text/csv"></label>
+            </div>
+          </details>
+          <p id="srcStatus" class="small status"></p>
+        </article>
+
+        <article class="card">
+          <h2>Pakai di perangkat lain</h2>
+          <p>Buka link setup ini sekali di HP/laptop lain. Sumber data langsung tersambung, tanpa perlu tempel ulang.</p>
+          <div class="actions">
+            <button id="btnCopySetup" class="btn" type="button" disabled>Salin link setup</button>
+          </div>
+          <p class="small muted">Link setup berisi alamat sumber data. Bagikan hanya ke orang yang boleh melihat data member.</p>
+
+          <h2 class="mt">Install aplikasi</h2>
+          <p id="installText">Pasang sebagai aplikasi supaya ada ikon di layar utama HP / desktop laptop dan terbuka layar penuh.</p>
+          <div class="actions">
+            <button id="btnInstall" class="btn primary" type="button" hidden>Install aplikasi</button>
+          </div>
+          <p id="installHelp" class="small muted"></p>
+        </article>
+
+        <article class="card">
+          <h2>Server geocoding</h2>
+          <label for="selProvider" class="lbl">Server yang dipakai</label>
+          <select id="selProvider">
+            <option value="auto">Otomatis — Nominatim, pindah ke Photon bila ditolak</option>
+            <option value="nominatim">Nominatim saja</option>
+            <option value="photon">Photon saja</option>
+          </select>
+          <p class="small muted">Keduanya gratis, tanpa API key, memakai data OpenStreetMap. Nominatim sering memblokir IP sementara (± 20 jam), terutama di jaringan seluler.</p>
+
+          <h2 class="mt">Cache geocoding di perangkat ini</h2>
+          <p id="cacheInfo" class="small muted"></p>
+          <div class="actions">
+            <button id="btnExport" class="btn" type="button">Ekspor cache</button>
+            <label class="btn file-btn">Impor cache<input id="inpImport" type="file" accept=".json,application/json"></label>
+            <button id="btnClearCache" class="btn danger" type="button">Hapus cache</button>
+          </div>
+        </article>
+      </div>
+
+      <div class="sec-head">
+        <h2>Alamat gagal di-geocode</h2>
+        <div class="actions">
+          <button id="btnCopyFail" class="btn sm" type="button">Salin daftar</button>
+          <button id="btnRetryFail" class="btn sm" type="button">Coba ulang semua</button>
         </div>
-        <p class="muted small">Ketuk <em>Ubah</em> untuk memperbaiki teks pencarian (mis. tambahkan kelurahan/kota), lalu cari ulang.</p>
+      </div>
+      <div class="card">
+        <p class="small muted">Ketuk <em>Ubah &amp; cari ulang</em> untuk memperbaiki teks pencarian (mis. tambahkan kelurahan/kota). Mengikuti filter center di atas.</p>
         <ul id="failList" class="fail-list"></ul>
-        <button id="btnFailMore" class="btn ghost full" type="button" hidden></button>
-      </article>
+        <button id="btnFailMore" class="btn full" type="button" hidden></button>
+      </div>
     </section>
   </main>
 
-  <dialog id="dlgSettings">
-    <form method="dialog" class="dlg">
-      <h2>Sumber data</h2>
-      <p class="small">Di Google Sheet: <b>File → Bagikan → Publikasikan ke web</b>, pilih <b>Sheet1</b> dan format <b>CSV</b>, lalu tempel link-nya di sini. Link hanya disimpan di browser ini.</p>
-      <label for="inpUrl" class="lbl">Link CSV Google Sheet</label>
-      <input id="inpUrl" type="url" inputmode="url" autocomplete="off" placeholder="https://docs.google.com/spreadsheets/d/e/…/pub?output=csv">
-      <div class="dlg-row">
-        <button id="btnLoadUrl" class="btn" type="button">Muat data</button>
-        <label class="btn ghost file-btn">Upload file CSV<input id="inpFile" type="file" accept=".csv,text/csv"></label>
-      </div>
-      <p id="srcStatus" class="small status"></p>
-
-      <h2>Server geocoding</h2>
-      <label for="selProvider" class="lbl">Server yang dipakai</label>
-      <select id="selProvider">
-        <option value="auto">Otomatis — Nominatim, pindah ke Photon bila ditolak</option>
-        <option value="nominatim">Nominatim saja</option>
-        <option value="photon">Photon saja</option>
-      </select>
-      <p class="small muted">Keduanya gratis, tanpa API key, dan memakai data OpenStreetMap. Nominatim sering memblokir IP sementara (± 20 jam), terutama di jaringan seluler yang IP-nya dipakai bersama.</p>
-
-      <h2>Cache geocoding</h2>
-      <p class="small">Hasil geocoding disimpan di browser ini supaya tidak perlu diulang. Anda bisa geocoding di laptop, ekspor cache, lalu impor di HP.</p>
-      <p id="cacheInfo" class="small muted"></p>
-      <div class="dlg-row">
-        <button id="btnExport" class="btn ghost" type="button">Ekspor cache</button>
-        <label class="btn ghost file-btn">Impor cache<input id="inpImport" type="file" accept=".json,application/json"></label>
-        <button id="btnClearCache" class="btn ghost danger" type="button">Hapus cache</button>
-      </div>
-
-      <div class="dlg-foot">
-        <button class="btn" value="close">Tutup</button>
-      </div>
-    </form>
-  </dialog>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
   <script src="vendor/leaflet/leaflet.js"></script>
   <script src="vendor/markercluster/leaflet.markercluster.js"></script>

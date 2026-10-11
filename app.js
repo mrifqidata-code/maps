@@ -49,6 +49,8 @@ const state = {
   failLimit: FAIL_PAGE,
   kelQuery: '',
   editingFail: null,
+  view: 'map',
+  loaded: false,
 };
 const cache = new Map();                // key -> hasil geocoding
 const queue = { items: [], running: false, paused: false, total: 0, done: 0, ok: 0, fail: 0,
@@ -197,11 +199,11 @@ function isUsableAddress(a) {
 
 function normAddr(a) { return a.toLowerCase().replace(/\s+/g, ' ').replace(/\s*,\s*/g, ', ').trim(); }
 
-function parseCsv(text) {
-  const res = Papa.parse(text, { skipEmptyLines: 'greedy' });
-  const rows = res.data;
+function parseCsvRows(text) { return Papa.parse(text, { skipEmptyLines: 'greedy' }).data; }
+
+function parseRows(rows) {
   const hIdx = rows.findIndex((r, i) => i < 20 && r.some((c) => normHeader(c).startsWith('alamat')));
-  if (hIdx < 0) throw new Error('Kolom "Alamat" tidak ditemukan di data. Pastikan link yang dipakai adalah CSV dari sheet yang benar.');
+  if (hIdx < 0) throw new Error('Kolom "Alamat" tidak ditemukan di data. Pastikan sumbernya sheet member yang benar.');
   const col = findColumns(rows[hIdx]);
   if (col.name < 0) throw new Error('Kolom "Child\'s Full Name" tidak ditemukan.');
 
@@ -529,6 +531,7 @@ async function runQueue() {
     }
     cache.set(it.key, res);
     idb.put(it.key, res);
+    markDirty(it.key);
     queue.done++;
     if (res.status === 'ok') queue.ok++; else queue.fail++;
     queue.durations.push(Date.now() - t0);
@@ -541,6 +544,7 @@ async function runQueue() {
   wake.release();
   renderProgress();
   scheduleRender(true);
+  schedulePush(true);
 }
 
 window.addEventListener('online', () => {
@@ -723,7 +727,7 @@ function showMemberOnMap(id) {
   const m = state.members[id];
   const g = m && cache.get(m.key);
   if (!g || g.status !== 'ok') return;
-  document.getElementById('map').scrollIntoView({ behavior: 'smooth', block: 'center' });
+  setView('map');
   map.setView([g.lat, g.lon], 16);
   L.popup({ maxWidth: 280 }).setLatLng([g.lat, g.lon]).setContent(popupHtml(m)).openOn(map);
 }
@@ -764,6 +768,7 @@ function render() {
   renderMapLayers(sel);
   renderLegend(sel);
   renderCards(sel);
+  renderMini(sel);
   renderCenterTable();
   renderKelurahan(sel);
   renderFailed(sel);
@@ -888,6 +893,15 @@ function renderCards(sel) {
     </div>${filterNote}`;
 }
 
+function renderMini(sel) {
+  const ds = sel.mapped.filter((x) => x.dist != null).map((x) => x.dist);
+  const avg = ds.length ? ds.reduce((a, b) => a + b, 0) / ds.length : null;
+  const max = ds.length ? Math.max(...ds) : null;
+  $('#miniKpis').innerHTML = `<span class="mini"><b>${fmtInt(sel.mapped.length)}</b> di peta</span>
+    <span class="mini">rata-rata <b>${avg != null ? fmtKm(avg) : '–'}</b> km</span>
+    <span class="mini">terjauh <b>${max != null ? fmtKm(max) : '–'}</b> km</span>`;
+}
+
 function renderCenterTable() {
   const panel = $('#panelCenters');
   panel.hidden = state.center !== 'ALL';
@@ -970,7 +984,7 @@ function renderFailed(sel) {
   $('#btnRetryFail').disabled = !failGroups.length;
 }
 
-// ---------------------------------------------------------------- data loading
+// ---------------------------------------------------------------- sumber data
 
 async function loadFromUrl(url) {
   const csvUrl = toCsvUrl(url);
@@ -987,21 +1001,24 @@ async function loadFromUrl(url) {
   return text;
 }
 
-function applyData(text, sourceLabel) {
-  const parsed = parseCsv(text);
+function applyRows(rows, sourceLabel) {
+  const parsed = parseRows(rows);
   state.members = parsed.members;
   state.noAddress = parsed.noAddress;
   state.totalRows = parsed.total;
   state.months = parsed.months;
   state.hiddenMonths.clear();
+  state.loaded = true;
   resetMarkers();
   const uniq = new Set(parsed.members.map((m) => m.key)).size;
   setSrcStatus(`${sourceLabel}: ${fmtInt(parsed.total)} baris, ${fmtInt(parsed.members.length)} punya alamat (${fmtInt(uniq)} alamat unik), ${fmtInt(parsed.noAddress)} tanpa alamat di-skip.`);
   buildQueue();
   render();
   renderProgress();
+  renderSourceUi();
   if (queue.items.length) runQueue();
 }
+function applyData(text, sourceLabel) { applyRows(parseCsvRows(text), sourceLabel); }
 
 function setSrcStatus(text, isErr = false) {
   const el = $('#srcStatus');
@@ -1013,12 +1030,245 @@ function updateCacheInfo() {
   let ok = 0;
   let fail = 0;
   for (const v of cache.values()) { if (v.status === 'ok') ok++; else fail++; }
-  $('#cacheInfo').textContent = `Tersimpan: ${fmtInt(ok)} alamat berhasil, ${fmtInt(fail)} gagal.`;
+  $('#cacheInfo').textContent = `Tersimpan di perangkat ini: ${fmtInt(ok)} alamat berhasil, ${fmtInt(fail)} gagal.`;
+}
+
+// ---------------------------------------------------------------- sinkron Google Sheet (Apps Script)
+
+const cloud = {
+  url: '',
+  remoteT: new Map(),     // key -> t (versi yang sudah ada di sheet)
+  dirty: new Set(),       // key yang belum terkirim ke sheet
+  pushing: false,
+  timer: null,
+  lastSync: 0,
+  error: '',
+};
+const PUSH_BATCH = 250;
+const PUSH_DELAY = 15000;
+
+function isScriptUrl(u) { return /^https:\/\/script\.google(usercontent)?\.com\//.test(u); }
+
+async function cloudFetch(url, opts = {}) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 90000);
+  let res;
+  try {
+    res = await fetch(url, { ...opts, signal: ctrl.signal, redirect: 'follow' });
+  } catch (e) {
+    throw new Error(e && e.name === 'AbortError'
+      ? 'Google Sheet tidak merespons (lebih dari 90 detik).'
+      : 'Tidak bisa terhubung ke Apps Script. Pastikan Web App di-deploy dengan akses "Anyone" (Siapa saja) dan link-nya diakhiri /exec.');
+  } finally {
+    clearTimeout(timer);
+  }
+  const text = await res.text();
+  let data;
+  try { data = JSON.parse(text); } catch {
+    throw new Error(/<html/i.test(text)
+      ? 'Apps Script meminta login. Deploy ulang Web App dengan "Who has access: Anyone" (Siapa saja).'
+      : 'Respons Apps Script tidak dikenali.');
+  }
+  if (!data || data.ok !== true) throw new Error((data && data.error) || 'Apps Script mengembalikan error.');
+  return data;
+}
+
+function mergeRemoteCache(pairs) {
+  let added = 0;
+  for (const [key, raw] of pairs || []) {
+    let v;
+    try { v = JSON.parse(raw); } catch { continue; }
+    if (!v || v.v !== CACHE_VERSION) continue;
+    if (v.status === 'ok' && (!Number.isFinite(v.lat) || !Number.isFinite(v.lon))) continue;
+    cloud.remoteT.set(key, v.t || 0);
+    const cur = cache.get(key);
+    const better = !cur
+      || (v.status === 'ok' && cur.status !== 'ok')
+      || ((v.t || 0) > (cur.t || 0) && !(cur.status === 'ok' && v.status !== 'ok'));
+    if (better) {
+      cache.set(key, v);
+      idb.put(key, v);
+      added++;
+    }
+  }
+  // Hasil di perangkat ini yang belum ada / lebih baru dari yang di sheet → kirim.
+  for (const [key, v] of cache) {
+    const rt = cloud.remoteT.get(key);
+    if (rt === undefined || (v.t || 0) > rt) cloud.dirty.add(key);
+  }
+  saveDirty();
+  return added;
+}
+
+function saveDirty() { store.set('cloudDirty', JSON.stringify([...cloud.dirty])); }
+function loadDirty() {
+  try { for (const k of JSON.parse(store.get('cloudDirty') || '[]')) cloud.dirty.add(k); } catch { /* abaikan */ }
+}
+
+function markDirty(key) {
+  if (!cloud.url) return;
+  cloud.dirty.add(key);
+  saveDirty();
+  schedulePush();
+}
+
+function schedulePush(now = false) {
+  if (!cloud.url || !cloud.dirty.size) { renderSync(); return; }
+  clearTimeout(cloud.timer);
+  cloud.timer = setTimeout(pushDirty, now ? 0 : PUSH_DELAY);
+  renderSync();
+}
+
+async function pushDirty(keepalive = false) {
+  if (!cloud.url || cloud.pushing || !cloud.dirty.size) return;
+  cloud.pushing = true;
+  renderSync();
+  try {
+    while (cloud.dirty.size) {
+      const keys = [...cloud.dirty].slice(0, PUSH_BATCH).filter((k) => cache.has(k));
+      const entries = keys.map((k) => [k, JSON.stringify(cache.get(k))]);
+      if (entries.length) {
+        await cloudFetch(cloud.url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+          body: JSON.stringify({ action: 'cache', entries }),
+          keepalive: keepalive && entries.length < 60,
+        });
+      }
+      for (const [k] of entries) cloud.remoteT.set(k, cache.get(k).t || 0);
+      [...cloud.dirty].slice(0, PUSH_BATCH).forEach((k) => cloud.dirty.delete(k));
+      saveDirty();
+      cloud.lastSync = Date.now();
+      cloud.error = '';
+      renderSync();
+    }
+  } catch (e) {
+    cloud.error = e.message;
+    clearTimeout(cloud.timer);
+    cloud.timer = setTimeout(pushDirty, 60000);
+  } finally {
+    cloud.pushing = false;
+    renderSync();
+  }
+}
+
+async function loadFromCloud(url, label = 'Data dari Google Sheet') {
+  cloud.url = url;
+  cloud.error = '';
+  setSync('busy', 'Memuat…', 'Mengambil data dari Google Sheet');
+  setSrcStatus('Mengambil data & cache dari Google Sheet…');
+  const data = await cloudFetch(`${url}${url.includes('?') ? '&' : '?'}action=all`);
+  if (!Array.isArray(data.rows)) throw new Error('Apps Script tidak mengirim data member.');
+  const added = mergeRemoteCache(data.cache);
+  cloud.lastSync = Date.now();
+  applyRows(data.rows, `${label}${data.sheet ? ` (tab ${data.sheet})` : ''}`);
+  if (added) toast(`${fmtInt(added)} hasil geocoding diambil dari Google Sheet`);
+  schedulePush(true);
+}
+
+function setSync(cls, text, title) {
+  const el = $('#syncStatus');
+  el.className = `sync ${cls}`;
+  el.textContent = text;
+  el.title = title || text;
+}
+
+function renderSync() {
+  if (cloud.url) {
+    if (cloud.error) setSync('err', 'Gagal sinkron', cloud.error);
+    else if (cloud.pushing || cloud.dirty.size) setSync('busy', 'Menyimpan…', `${fmtInt(cloud.dirty.size)} hasil geocoding menunggu dikirim ke Google Sheet`);
+    else setSync('ok', 'Tersinkron', 'Data & hasil geocoding tersimpan di Google Sheet: sama di HP & laptop');
+  } else if (state.loaded) {
+    setSync('', 'Hanya di perangkat ini', 'Hubungkan Apps Script di tab Data supaya sama di HP & laptop');
+  } else {
+    setSync('', 'Belum ada data', 'Atur sumber data di tab Data');
+  }
+  const info = $('#cloudInfo');
+  if (info) {
+    info.textContent = cloud.url
+      ? (cloud.error ? `Gagal sinkron: ${cloud.error}`
+        : `Terhubung. ${cloud.lastSync ? `Sinkron terakhir ${new Date(cloud.lastSync).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })}` : ''}${cloud.dirty.size ? ` · ${fmtInt(cloud.dirty.size)} hasil menunggu dikirim` : ''}`)
+      : '';
+  }
+}
+
+function sourceUrl() { return cloud.url ? { type: 'script', url: cloud.url } : (store.get('sheetUrl') ? { type: 'csv', url: store.get('sheetUrl') } : null); }
+
+function renderSourceUi() {
+  const src = sourceUrl();
+  $('#btnConnect').textContent = cloud.url ? 'Hubungkan ulang' : 'Hubungkan';
+  $('#btnSyncNow').hidden = !cloud.url;
+  $('#btnDisconnect').hidden = !cloud.url;
+  $('#btnCopySetup').disabled = !src;
+  $('#dataDot').hidden = !!state.loaded;
+  renderSync();
+}
+
+// ---------------------------------------------------------------- tab & install
+
+function setView(v) {
+  if (!['map', 'stats', 'kel', 'data'].includes(v)) v = 'map';
+  state.view = v;
+  store.set('view', v);
+  document.querySelectorAll('.tabs button').forEach((b) => {
+    if (b.dataset.view === v) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current');
+  });
+  for (const k of ['map', 'stats', 'kel', 'data']) $(`#v-${k}`).hidden = k !== v;
+  if (v === 'map') setTimeout(() => map.invalidateSize(), 0);
+  if (v === 'data') updateCacheInfo();
+  window.scrollTo({ top: 0 });
+}
+
+let installEvt = null;
+function initInstall() {
+  const standalone = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone;
+  const ios = /iphone|ipad|ipod/i.test(navigator.userAgent);
+  const help = $('#installHelp');
+  if (standalone) {
+    $('#installText').textContent = 'Aplikasi sudah terpasang dan sedang dibuka sebagai aplikasi.';
+  } else if (ios) {
+    help.textContent = 'Di iPhone/iPad: buka di Safari, ketuk tombol Bagikan, lalu “Tambah ke Layar Utama”.';
+  } else {
+    help.textContent = 'Jika tombol tidak muncul: buka menu browser (⋮) → “Install aplikasi” / “Tambahkan ke layar utama”.';
+  }
+  window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault();
+    installEvt = e;
+    $('#btnInstall').hidden = false;
+  });
+  window.addEventListener('appinstalled', () => {
+    installEvt = null;
+    $('#btnInstall').hidden = true;
+    toast('Aplikasi terpasang ✓');
+  });
+  $('#btnInstall').addEventListener('click', async () => {
+    if (!installEvt) return;
+    installEvt.prompt();
+    await installEvt.userChoice.catch(() => null);
+    installEvt = null;
+    $('#btnInstall').hidden = true;
+  });
+  if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
+    navigator.serviceWorker.register('sw.js').catch(() => { /* abaikan */ });
+  }
+}
+
+let toastTimer;
+function toast(msg) {
+  const t = $('#toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove('show'), 2800);
 }
 
 // ---------------------------------------------------------------- events
 
 function bindEvents() {
+  document.querySelector('.tabs').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-view]');
+    if (b) setView(b.dataset.view);
+  });
   $('#legend').addEventListener('click', onLegendClick);
   $('#centerChips').addEventListener('click', (e) => {
     const b = e.target.closest('[data-center]');
@@ -1027,13 +1277,13 @@ function bindEvents() {
   });
   $('#tblCenters').addEventListener('click', (e) => {
     const tr = e.target.closest('[data-center]');
-    if (tr) { selectCenter(tr.dataset.center); document.getElementById('map').scrollIntoView({ behavior: 'smooth', block: 'center' }); }
+    if (tr) { selectCenter(tr.dataset.center); setView('map'); }
   });
   document.querySelector('.seg').addEventListener('click', (e) => {
     const b = e.target.closest('[data-mode]');
     if (!b) return;
     state.mode = b.dataset.mode;
-    document.querySelectorAll('.seg button').forEach((x) => x.classList.toggle('on', x === b));
+    document.querySelectorAll('.seg button').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
     renderMapLayers(selection());
   });
   document.addEventListener('click', (e) => {
@@ -1045,8 +1295,8 @@ function bindEvents() {
     if (!tr) return;
     const gr = kelGroups[+tr.dataset.kel];
     const pts = gr.ids.map((id) => cache.get(state.members[id].key)).map((g) => [g.lat, g.lon]);
-    document.getElementById('map').scrollIntoView({ behavior: 'smooth', block: 'center' });
-    map.fitBounds(L.latLngBounds(pts).pad(0.3), { maxZoom: 16 });
+    setView('map');
+    setTimeout(() => map.fitBounds(L.latLngBounds(pts).pad(0.3), { maxZoom: 16 }), 50);
   });
   $('#kelSearch').addEventListener('input', (e) => { state.kelQuery = e.target.value.trim(); renderKelurahan(selection()); });
   $('#btnKelMore').addEventListener('click', () => { state.kelLimit = Infinity; renderKelurahan(selection()); });
@@ -1077,9 +1327,9 @@ function bindEvents() {
     for (const f of failGroups) lines.push(`${f.center}\t${f.names.join(', ')}\t${f.addr}`);
     try {
       await navigator.clipboard.writeText(lines.join('\n'));
-      flash($('#btnCopyFail'), 'Tersalin ✓');
+      toast('Daftar alamat gagal tersalin');
     } catch {
-      flash($('#btnCopyFail'), 'Gagal menyalin');
+      toast('Gagal menyalin');
     }
   });
   $('#btnRetryFail').addEventListener('click', () => {
@@ -1098,8 +1348,34 @@ function bindEvents() {
     if (queue.running) { queue.paused = true; $('#btnPause').textContent = 'Menjeda…'; } else runQueue();
   });
 
-  const dlg = $('#dlgSettings');
-  $('#btnSettings').addEventListener('click', () => { updateCacheInfo(); dlg.showModal(); });
+  // --- sumber data
+  $('#btnConnect').addEventListener('click', async () => {
+    const url = $('#inpScript').value.trim();
+    if (!isScriptUrl(url)) { setSrcStatus('Tempel link Web App Apps Script (diawali https://script.google.com/…/exec).', true); return; }
+    await stopQueue();
+    try {
+      await loadFromCloud(url);
+      store.set('scriptUrl', url);
+      toast('Terhubung ke Google Sheet ✓');
+    } catch (err) {
+      cloud.url = store.get('scriptUrl') || '';
+      setSrcStatus(err.message, true);
+      renderSourceUi();
+    }
+  });
+  $('#btnSyncNow').addEventListener('click', async () => {
+    await stopQueue();
+    try { await loadFromCloud(cloud.url); toast('Sinkron selesai'); } catch (err) { cloud.error = err.message; setSrcStatus(err.message, true); renderSync(); }
+  });
+  $('#btnDisconnect').addEventListener('click', () => {
+    if (!confirm('Putuskan sambungan ke Google Sheet di perangkat ini? Data yang sudah tampil tetap ada di perangkat ini.')) return;
+    cloud.url = '';
+    cloud.dirty.clear();
+    saveDirty();
+    store.set('scriptUrl', '');
+    $('#inpScript').value = '';
+    renderSourceUi();
+  });
   $('#btnLoadUrl').addEventListener('click', async () => {
     const url = $('#inpUrl').value.trim();
     if (!url) { setSrcStatus('Tempel link CSV terlebih dahulu.', true); return; }
@@ -1107,23 +1383,31 @@ function bindEvents() {
       const text = await loadFromUrl(url);
       store.set('sheetUrl', url);
       applyData(text, 'Data dimuat');
-      dlg.close();
     } catch (err) { setSrcStatus(err.message, true); }
   });
   $('#inpFile').addEventListener('change', async (e) => {
     const file = e.target.files[0];
     if (!file) return;
-    try {
-      applyData(await file.text(), `File ${file.name}`);
-      dlg.close();
-    } catch (err) { setSrcStatus(err.message, true); }
+    try { applyData(await file.text(), `File ${file.name}`); } catch (err) { setSrcStatus(err.message, true); }
     e.target.value = '';
   });
+  $('#btnCopySetup').addEventListener('click', async () => {
+    const src = sourceUrl();
+    if (!src) return;
+    const link = `${location.origin}${location.pathname}#${src.type}=${encodeURIComponent(src.url)}`;
+    try {
+      await navigator.clipboard.writeText(link);
+      toast('Link setup tersalin. Buka di perangkat lain.');
+    } catch {
+      prompt('Salin link setup ini:', link);
+    }
+  });
+
+  // --- geocoding & cache
   $('#selProvider').addEventListener('change', async (e) => {
     store.set('geoProvider', e.target.value);
     const wasRunning = queue.running || queue.items.length > 0;
-    queue.paused = true;
-    while (queue.running) await sleep(200);
+    await stopQueue();
     setGeoMode(e.target.value);
     queue.error = '';
     renderProgress();
@@ -1154,33 +1438,46 @@ function bindEvents() {
         if (cur && cur.status === 'ok' && v.status !== 'ok') continue;
         cache.set(k, v);
         idb.put(k, v);
+        if (cloud.url) cloud.dirty.add(k);
         n++;
       }
+      saveDirty();
       updateCacheInfo();
-      setSrcStatus(`${fmtInt(n)} entri cache diimpor.`);
-      queue.paused = true;
-      while (queue.running) await sleep(200);
+      toast(`${fmtInt(n)} entri cache diimpor`);
+      await stopQueue();
       resetMarkers();
       buildQueue();
       render();
       renderProgress();
+      schedulePush(true);
       if (queue.items.length) runQueue();
     } catch (err) { setSrcStatus(`Impor gagal: ${err.message}`, true); }
     e.target.value = '';
   });
   $('#btnClearCache').addEventListener('click', async () => {
-    if (!confirm('Hapus semua hasil geocoding yang tersimpan? Semua alamat harus di-geocode ulang.')) return;
-    queue.paused = true;
-    while (queue.running) await sleep(200);
+    if (!confirm('Hapus hasil geocoding yang tersimpan di perangkat ini? (Cache di Google Sheet tidak ikut terhapus.)')) return;
+    await stopQueue();
     cache.clear();
     await idb.clear();
     resetMarkers();
     updateCacheInfo();
+    if (cloud.url) {
+      try { await loadFromCloud(cloud.url); return; } catch (err) { setSrcStatus(err.message, true); }
+    }
     buildQueue();
     render();
     renderProgress();
     if (queue.items.length) runQueue();
   });
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden' && cloud.dirty.size) pushDirty(true);
+  });
+}
+
+async function stopQueue() {
+  queue.paused = true;
+  while (queue.running) await sleep(200);
 }
 
 function selectCenter(code) {
@@ -1197,12 +1494,6 @@ function selectCenter(code) {
   render();
 }
 
-function flash(btn, text) {
-  const old = btn.textContent;
-  btn.textContent = text;
-  setTimeout(() => { btn.textContent = old; }, 1600);
-}
-
 // ---------------------------------------------------------------- start
 
 async function main() {
@@ -1213,25 +1504,46 @@ async function main() {
   initMap();
   drawRings();
   bindEvents();
+  initInstall();
+  setView(store.get('view') || 'map');
   render();
+  renderSourceUi();
   await idb.open();
   await idb.loadAll();
+  loadDirty();
 
+  // Link setup dari perangkat lain: #script=… atau #csv=…
   const params = new URLSearchParams(location.hash.slice(1));
-  const hashUrl = params.get('csv');
-  if (hashUrl) { store.set('sheetUrl', hashUrl); history.replaceState(null, '', location.pathname + location.search); }
-  const url = hashUrl || store.get('sheetUrl');
-  if (url) {
-    $('#inpUrl').value = url;
+  const hashScript = params.get('script');
+  const hashCsv = params.get('csv');
+  if (hashScript && isScriptUrl(hashScript)) store.set('scriptUrl', hashScript);
+  if (hashCsv) store.set('sheetUrl', hashCsv);
+  if (hashScript || hashCsv) history.replaceState(null, '', location.pathname + location.search);
+
+  const scriptUrl = store.get('scriptUrl');
+  const csvUrl = store.get('sheetUrl');
+  if (scriptUrl) $('#inpScript').value = scriptUrl;
+  if (csvUrl) $('#inpUrl').value = csvUrl;
+  if (scriptUrl) {
     try {
-      applyData(await loadFromUrl(url), 'Data dimuat');
+      await loadFromCloud(scriptUrl);
+      return;
+    } catch (err) {
+      cloud.error = err.message;
+      setSrcStatus(err.message, true);
+      renderSync();
+    }
+  } else if (csvUrl) {
+    try {
+      applyData(await loadFromUrl(csvUrl), 'Data dimuat');
       return;
     } catch (err) {
       setSrcStatus(err.message, true);
     }
   }
   updateCacheInfo();
-  $('#dlgSettings').showModal();
+  renderSourceUi();
+  if (!state.loaded) setView('data');
 }
 
 main();
