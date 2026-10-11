@@ -2,13 +2,14 @@
  * File app (index/app.js/app.css) diambil dari jaringan dulu supaya update langsung terpakai;
  * library di vendor/ dan ikon diambil dari cache. Request ke server lain (peta, geocoding,
  * Google Sheet) tidak disentuh. */
-const VERSION = 'sebaran-v2';
+const VERSION = 'sebaran-v3';
 const SHELL = [
   './', 'index.html', 'app.css', 'app.js', 'manifest.webmanifest',
   'icons/icon.svg', 'icons/icon-192.png', 'icons/icon-512.png',
   'vendor/leaflet/leaflet.css', 'vendor/leaflet/leaflet.js',
   'vendor/markercluster/MarkerCluster.css', 'vendor/markercluster/leaflet.markercluster.js',
   'vendor/leaflet-heat/leaflet-heat.js', 'vendor/papaparse/papaparse.min.js',
+  'data/kelurahan-jabodetabek.json',
 ];
 
 self.addEventListener('install', (e) => {
@@ -28,7 +29,7 @@ self.addEventListener('fetch', (e) => {
   if (req.method !== 'GET') return;
   const url = new URL(req.url);
   if (url.origin !== self.location.origin) return;
-  const isStatic = /\/(vendor|icons)\//.test(url.pathname);
+  const isStatic = /\/(vendor|icons|data)\//.test(url.pathname);
   if (isStatic) {
     e.respondWith(caches.match(req).then((hit) => hit || fetch(req).then((res) => {
       if (res.ok) { const copy = res.clone(); caches.open(VERSION).then((c) => c.put(req, copy)); }

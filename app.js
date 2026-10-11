@@ -59,6 +59,7 @@ const queue = { items: [], running: false, paused: false, total: 0, done: 0, ok:
 const $ = (s) => document.querySelector(s);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const fmtInt = (n) => n.toLocaleString('id-ID');
+const fmtPct = (r) => `${(r * 100).toLocaleString('id-ID', { maximumFractionDigits: 1 })}%`;
 const fmtKm = (n) => n.toLocaleString('id-ID', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const store = {
@@ -136,6 +137,164 @@ function monthLabel(key) {
 function memberColor(m) {
   if (state.center === 'ALL') return CENTERS[m.center]?.color || OTHER_COLOR;
   return monthColor(m.month);
+}
+
+// ---------------------------------------------------------------- batas kelurahan (Dukcapil)
+// Kelurahan ditentukan dari poligon batas wilayah resmi tempat titik geocode jatuh
+// (point-in-polygon), bukan dari label alamat geocoder. Data: data/kelurahan-jabodetabek.json,
+// dibangun oleh tools/build_kelurahan.py.
+
+const KEL_URL = 'data/kelurahan-jabodetabek.json';
+const KEL_CELL = 200;            // sel grid 0,02° (koordinat disimpan ×10.000)
+const KEL_NEAR = 30;             // titik di celah antar-poligon: ambil poligon terdekat dalam ±300 m
+const KEL_TEXT_KM = 4;           // nama kelurahan di teks alamat dipakai bila dalam radius ini
+const kelDb = { ready: false, items: [], grid: new Map() };
+const adminMemo = new Map();     // key alamat -> {lat, lon, res}
+
+function titleCase(s) {
+  return String(s || '').toLowerCase().replace(/(^|[\s.(/-])([a-z])/g, (_, p, c) => p + c.toUpperCase());
+}
+function normPlace(s) {
+  return String(s || '').toUpperCase()
+    .replace(/\bPDK?\b\.?/g, 'PONDOK ').replace(/\bKP\b\.?/g, 'KAMPUNG ').replace(/\bKEL\b\.?/g, ' ')
+    .replace(/[^A-Z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+function buildKelDb(raw) {
+  kelDb.items = [];
+  kelDb.grid = new Map();
+  raw.kel.forEach((k, i) => {
+    const [name, kecIdx, ...encRings] = k;
+    const [kecName, kabIdx] = raw.kec[kecIdx];
+    let minx = Infinity; let miny = Infinity; let maxx = -Infinity; let maxy = -Infinity;
+    let sx = 0; let sy = 0; let n = 0;
+    const rings = encRings.map((flat) => {
+      const pts = new Int32Array(flat.length);
+      let x = flat[0];
+      let y = flat[1];
+      pts[0] = x; pts[1] = y;
+      for (let j = 2; j < flat.length; j += 2) { x += flat[j]; y += flat[j + 1]; pts[j] = x; pts[j + 1] = y; }
+      for (let j = 0; j < pts.length; j += 2) {
+        const px = pts[j]; const py = pts[j + 1];
+        if (px < minx) minx = px;
+        if (px > maxx) maxx = px;
+        if (py < miny) miny = py;
+        if (py > maxy) maxy = py;
+        sx += px; sy += py; n++;
+      }
+      return pts;
+    });
+    const it = {
+      i, name, kec: kecName, kab: raw.kab[kabIdx], rings,
+      bbox: [minx, miny, maxx, maxy], cx: sx / n, cy: sy / n,
+      pad: ` ${normPlace(name)} `, ll: null,
+    };
+    kelDb.items.push(it);
+    for (let gx = Math.floor(minx / KEL_CELL); gx <= Math.floor(maxx / KEL_CELL); gx++) {
+      for (let gy = Math.floor(miny / KEL_CELL); gy <= Math.floor(maxy / KEL_CELL); gy++) {
+        const key = `${gx}:${gy}`;
+        if (!kelDb.grid.has(key)) kelDb.grid.set(key, []);
+        kelDb.grid.get(key).push(it);
+      }
+    }
+  });
+}
+
+async function loadKelurahan() {
+  try {
+    const res = await fetch(KEL_URL);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    buildKelDb(await res.json());
+    kelDb.ready = true;
+    adminMemo.clear();
+    scheduleRender(true);
+  } catch {
+    // Tanpa data batas: kelurahan memakai label dari geocoder.
+  }
+}
+
+function inRing(pts, x, y) {
+  let inside = false;
+  for (let i = 0, j = pts.length - 2; i < pts.length; j = i, i += 2) {
+    const xi = pts[i]; const yi = pts[i + 1]; const xj = pts[j]; const yj = pts[j + 1];
+    if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+function segDist2(px, py, ax, ay, bx, by) {
+  const dx = bx - ax; const dy = by - ay;
+  const t = dx || dy ? Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy))) : 0;
+  const ex = ax + t * dx - px; const ey = ay + t * dy - py;
+  return ex * ex + ey * ey;
+}
+
+function kelLocate(lat, lon) {
+  if (!kelDb.ready) return null;
+  const x = lon * 1e4; const y = lat * 1e4;
+  const cx = Math.floor(x / KEL_CELL); const cy = Math.floor(y / KEL_CELL);
+  for (const it of kelDb.grid.get(`${cx}:${cy}`) || []) {
+    const b = it.bbox;
+    if (x < b[0] || x > b[2] || y < b[1] || y > b[3]) continue;
+    if (it.rings.some((r) => inRing(r, x, y))) return { it, near: false };
+  }
+  let best = null;
+  let bestD = KEL_NEAR * KEL_NEAR;
+  for (let gx = cx - 1; gx <= cx + 1; gx++) {
+    for (let gy = cy - 1; gy <= cy + 1; gy++) {
+      for (const it of kelDb.grid.get(`${gx}:${gy}`) || []) {
+        for (const r of it.rings) {
+          for (let j = 2; j < r.length; j += 2) {
+            const d = segDist2(x, y, r[j - 2], r[j - 1], r[j], r[j + 1]);
+            if (d < bestD) { bestD = d; best = it; }
+          }
+        }
+      }
+    }
+  }
+  return best ? { it: best, near: true } : null;
+}
+
+// Nama kelurahan yang tertulis di alamat, bila letaknya dekat titik geocode.
+function kelFromText(addr, lat, lon) {
+  const text = ` ${normPlace(addr)} `;
+  const x = lon * 1e4; const y = lat * 1e4;
+  const kx = Math.cos((lat * Math.PI) / 180);
+  let best = null;
+  for (const it of kelDb.items) {
+    if (it.name === it.kec) continue; // "Duren Sawit" di alamat biasanya maksudnya kecamatan
+    if (!text.includes(it.pad)) continue;
+    const km = (Math.hypot((it.cx - x) * kx, it.cy - y) / 1e4) * 111.32;
+    if (km > KEL_TEXT_KM) continue;
+    if (!best || it.pad.length > best.it.pad.length || (it.pad.length === best.it.pad.length && km < best.km)) best = { it, km };
+  }
+  return best && best.it;
+}
+
+function packAdmin(it, how) {
+  return { kel: titleCase(it.name), kec: titleCase(it.kec), kab: titleCase(it.kab), idx: it.i, how };
+}
+
+// how: 'poligon' | 'dekat' (di celah batas) | 'teks' (dari nama di alamat) | 'geocoder' (di luar data batas)
+function adminFor(key, g, addr) {
+  if (!g || g.status !== 'ok') return null;
+  if (!kelDb.ready) return g.kel ? { kel: g.kel, kec: g.kec, kab: g.city, idx: null, how: 'geocoder' } : null;
+  const memo = adminMemo.get(key);
+  if (memo && memo.lat === g.lat && memo.lon === g.lon) return memo.res;
+  const hit = kelLocate(g.lat, g.lon);
+  let res = null;
+  if (g.level !== 'alamat') {
+    const txt = kelFromText(addr, g.lat, g.lon);
+    if (txt && (!hit || txt !== hit.it)) res = packAdmin(txt, 'teks');
+  }
+  if (!res && hit) res = packAdmin(hit.it, hit.near ? 'dekat' : 'poligon');
+  if (!res && g.kel) res = { kel: g.kel, kec: g.kec, kab: g.city, idx: null, how: 'geocoder' };
+  adminMemo.set(key, { lat: g.lat, lon: g.lon, res });
+  return res;
+}
+
+function kelLatLngs(it) {
+  if (!it.ll) it.ll = it.rings.map((r) => { const out = []; for (let j = 0; j < r.length; j += 2) out.push([r[j + 1] / 1e4, r[j] / 1e4]); return out; });
+  return it.ll;
 }
 
 // ---------------------------------------------------------------- parsing data
@@ -461,7 +620,7 @@ async function geocodeAddress(addr, center, manualQuery) {
     const hit = await provider.search(t.q, t.box);
     if (!hit || hit.coarse || !Number.isFinite(hit.lat) || !Number.isFinite(hit.lon)) continue;
     let parts = hit.parts;
-    if (!parts.kel) {
+    if (!parts.kel && !kelLocate(hit.lat, hit.lon)) {
       const rev = await provider.reverse(hit.lat, hit.lon).catch((e) => {
         if (e instanceof NetError || e instanceof PauseSignal || e instanceof SwitchSignal) throw e;
         return null;
@@ -621,6 +780,10 @@ let pinLayer;
 let heatLayer;
 let centerLayer;
 let ringLayer;
+let regionLayer;
+let highlightLayer;
+let regionBreaks = [];
+const REGION_COLORS = ['#b7d3f6', '#6da7ec', '#2a78d6', '#1c5cab', '#0d366b'];
 const markers = new Map(); // member id -> circleMarker (dipakai ulang antar-render)
 
 function initMap() {
@@ -646,7 +809,9 @@ function initMap() {
     radius: 22, blur: 18, maxZoom: 14, minOpacity: 0.35,
     gradient: { 0.2: '#b7d3f6', 0.4: '#6da7ec', 0.6: '#2a78d6', 0.8: '#1c5cab', 1: '#0d366b' },
   });
+  regionLayer = L.layerGroup();
   ringLayer = L.layerGroup().addTo(map);
+  highlightLayer = L.layerGroup().addTo(map);
   centerLayer = L.layerGroup().addTo(map);
 
   for (const [code, c] of Object.entries(CENTERS)) {
@@ -687,7 +852,11 @@ function popupHtml(m) {
   const g = cache.get(m.key);
   const c = CENTERS[m.center];
   const dist = g && c ? haversine(c.lat, c.lon, g.lat, g.lon) : null;
-  const kel = g?.kel ? `${esc(g.kel)}${g.kec ? `<br><span class="muted">${esc(g.kec)}${g.city ? `, ${esc(g.city)}` : ''}</span>` : ''}` : '<span class="muted">tidak diketahui</span>';
+  const ad = adminFor(m.key, g, m.addr);
+  const HOW = { teks: 'dari nama kelurahan di alamat', dekat: 'titik di tepi batas kelurahan', geocoder: 'label geocoder (di luar data batas wilayah)' };
+  const kel = ad?.kel
+    ? `${esc(ad.kel)}${ad.kec || ad.kab ? `<br><span class="muted">${esc([ad.kec, ad.kab].filter(Boolean).join(', '))}</span>` : ''}${HOW[ad.how] ? `<br><span class="muted small">(${HOW[ad.how]})</span>` : ''}`
+    : '<span class="muted">tidak diketahui</span>';
   const approx = g && g.level !== 'alamat'
     ? `<p class="approx">${g.level === 'manual' ? 'Lokasi dari pencarian manual' : 'Lokasi perkiraan'}: dicocokkan dengan “${esc(g.q)}”.</p>` : '';
   return `<div class="pop">
@@ -791,7 +960,7 @@ function renderMapLayers(sel) {
     shownIds = new Set();
     shownMode = state.mode;
   }
-  if (state.mode !== 'heat') {
+  if (state.mode === 'cluster' || state.mode === 'pins') {
     const want = new Set();
     const toAdd = [];
     for (const { m, g } of sel.mapped) {
@@ -810,14 +979,62 @@ function renderMapLayers(sel) {
     shownIds = want;
   }
   heatLayer.setLatLngs(state.mode === 'heat' ? sel.mapped.map(({ g }) => [g.lat, g.lon, 1]) : []);
-  for (const [mode, layer] of [['cluster', clusterLayer], ['pins', pinLayer], ['heat', heatLayer]]) {
+  renderRegions(sel);
+  for (const [mode, layer] of [['cluster', clusterLayer], ['pins', pinLayer], ['heat', heatLayer], ['area', regionLayer]]) {
     if (state.mode === mode && !map.hasLayer(layer)) map.addLayer(layer);
     if (state.mode !== mode && map.hasLayer(layer)) map.removeLayer(layer);
   }
 }
 
+function renderRegions(sel) {
+  regionLayer.clearLayers();
+  if (state.mode !== 'area' || !kelDb.ready) return;
+  const groups = computeKelGroups(sel).filter((g) => g.idx != null);
+  const counts = groups.map((g) => g.n).sort((a, b) => a - b);
+  const max = counts[counts.length - 1] || 0;
+  // Batas kelas: kuantil jumlah member per kelurahan (maks 5 kelas).
+  const br = [];
+  if (max <= 5) for (let v = 1; v <= max; v++) br.push(v);
+  else {
+    for (const q of [0.2, 0.4, 0.6, 0.8]) br.push(counts[Math.min(counts.length - 1, Math.floor(q * counts.length))]);
+    br.push(max);
+  }
+  regionBreaks = [...new Set(br)].sort((a, b) => a - b);
+  const offset = REGION_COLORS.length - regionBreaks.length;
+  const total = sel.mapped.length || 1;
+  for (const g of groups) {
+    const it = kelDb.items[g.idx];
+    const cls = regionBreaks.findIndex((b) => g.n <= b);
+    L.polygon(kelLatLngs(it), {
+      color: '#ffffff', weight: 1, opacity: 0.9,
+      fillColor: REGION_COLORS[offset + Math.max(0, cls)], fillOpacity: 0.72,
+    }).bindPopup(`<div class="pop"><h3>${esc(g.kel)}</h3><p style="margin:0 0 6px" class="muted">${esc([g.kec, g.city].filter(Boolean).join(', '))}</p>
+      <dl><dt>Member</dt><dd><b>${fmtInt(g.n)}</b> (${fmtPct(g.n / total)})</dd>
+      ${g.dn ? `<dt>Rata-rata</dt><dd>${fmtKm(g.dsum / g.dn)} km ke center</dd>` : ''}
+      ${g.approx ? `<dt>Perkiraan</dt><dd>${fmtInt(g.approx)} alamat</dd>` : ''}</dl></div>`, { maxWidth: 260 })
+      .addTo(regionLayer);
+  }
+}
+
+function highlightKel(gr) {
+  highlightLayer.clearLayers();
+  if (gr.idx == null || !kelDb.ready) return null;
+  const poly = L.polygon(kelLatLngs(kelDb.items[gr.idx]), {
+    color: '#1c5cab', weight: 3, dashArray: '6 4', fill: true, fillOpacity: 0.06, interactive: false,
+  }).addTo(highlightLayer);
+  return poly.getBounds();
+}
+
 function renderLegend() {
   const div = $('#legend');
+  if (state.mode === 'area') {
+    if (!kelDb.ready) { div.innerHTML = '<span class="hint">Memuat batas kelurahan…</span>'; return; }
+    div.innerHTML = `<span class="lg-title">Member per kelurahan</span>${regionBreaks.map((b, i) => {
+      const lo = i ? regionBreaks[i - 1] + 1 : 1;
+      return `<span class="row static"><span class="sw sq" style="--c:${REGION_COLORS[i + REGION_COLORS.length - regionBreaks.length]}"></span>${lo === b ? fmtInt(b) : `${fmtInt(lo)}–${fmtInt(b)}`}</span>`;
+    }).join('')}<p class="hint">Batas wilayah resmi Dukcapil. Ketuk kelurahan untuk detail.</p>`;
+    return;
+  }
   if (state.center === 'ALL') {
     const counts = {};
     let other = 0;
@@ -927,18 +1144,24 @@ function renderCenterTable() {
 }
 
 let kelGroups = [];
-function renderKelurahan(sel) {
+function computeKelGroups(sel) {
   const groups = new Map();
   for (const x of sel.mapped) {
-    const kel = x.g.kel || '(tidak diketahui)';
-    const key = `${kel}|${x.g.kec || ''}|${x.g.city || ''}`;
+    const ad = adminFor(x.m.key, x.g, x.m.addr);
+    const kel = ad?.kel || '(tidak diketahui)';
+    const key = `${kel}|${ad?.kec || ''}|${ad?.kab || ''}`;
     let gr = groups.get(key);
-    if (!gr) { gr = { kel, kec: x.g.kec, city: x.g.city, n: 0, dsum: 0, dn: 0, ids: [] }; groups.set(key, gr); }
+    if (!gr) { gr = { kel, kec: ad?.kec || '', city: ad?.kab || '', idx: ad?.idx ?? null, n: 0, approx: 0, dsum: 0, dn: 0, ids: [] }; groups.set(key, gr); }
     gr.n++;
+    if (x.g.level !== 'alamat' || (ad && ad.how !== 'poligon')) gr.approx++;
     gr.ids.push(x.m.id);
     if (x.dist != null) { gr.dsum += x.dist; gr.dn++; }
   }
-  kelGroups = [...groups.values()].sort((a, b) => b.n - a.n || a.kel.localeCompare(b.kel));
+  return [...groups.values()].sort((a, b) => b.n - a.n || a.kel.localeCompare(b.kel));
+}
+
+function renderKelurahan(sel) {
+  kelGroups = computeKelGroups(sel);
   const q = state.kelQuery.toLowerCase();
   const filtered = q ? kelGroups.filter((g) => `${g.kel} ${g.kec} ${g.city}`.toLowerCase().includes(q)) : kelGroups;
   const shown = filtered.slice(0, state.kelLimit);
@@ -948,8 +1171,8 @@ function renderKelurahan(sel) {
     ? `<thead><tr><th class="num">#</th><th>Kelurahan</th><th class="num">Member</th><th class="bar-cell"></th></tr></thead>
       <tbody>${shown.map((g) => `<tr data-kel="${kelGroups.indexOf(g)}">
         <td class="num muted">${kelGroups.indexOf(g) + 1}</td>
-        <td><div class="kel-name">${esc(g.kel)}</div><div class="kel-sub">${esc([g.kec, g.city].filter(Boolean).join(', '))}${g.dn ? ` · rata-rata ${fmtKm(g.dsum / g.dn)} km` : ''}</div></td>
-        <td class="num"><b>${fmtInt(g.n)}</b><div class="kel-sub">${Math.round((g.n / total) * 1000) / 10}%</div></td>
+        <td><div class="kel-name">${esc(g.kel)}</div><div class="kel-sub">${esc([g.kec, g.city].filter(Boolean).join(', '))}${g.dn ? ` · rata-rata ${fmtKm(g.dsum / g.dn)} km` : ''}${g.approx ? ` · ${fmtInt(g.approx)} perkiraan` : ''}</div></td>
+        <td class="num"><b>${fmtInt(g.n)}</b><div class="kel-sub">${fmtPct(g.n / total)}</div></td>
         <td class="bar-cell"><div class="mini-bar" style="width:${(g.n / max) * 100}%"></div></td></tr>`).join('')}</tbody>`
     : `<tbody><tr><td class="empty">${q ? 'Tidak ada kelurahan yang cocok.' : 'Belum ada data.'}</td></tr></tbody>`;
   const more = $('#btnKelMore');
@@ -1285,6 +1508,7 @@ function bindEvents() {
     state.mode = b.dataset.mode;
     document.querySelectorAll('.seg button').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
     renderMapLayers(selection());
+    renderLegend();
   });
   document.addEventListener('click', (e) => {
     const s = e.target.closest('[data-show]');
@@ -1296,7 +1520,9 @@ function bindEvents() {
     const gr = kelGroups[+tr.dataset.kel];
     const pts = gr.ids.map((id) => cache.get(state.members[id].key)).map((g) => [g.lat, g.lon]);
     setView('map');
-    setTimeout(() => map.fitBounds(L.latLngBounds(pts).pad(0.3), { maxZoom: 16 }), 50);
+    const bounds = highlightKel(gr) || L.latLngBounds(pts);
+    for (const p of pts) bounds.extend(p);
+    setTimeout(() => map.fitBounds(bounds.pad(0.15), { maxZoom: 16 }), 50);
   });
   $('#kelSearch').addEventListener('input', (e) => { state.kelQuery = e.target.value.trim(); renderKelurahan(selection()); });
   $('#btnKelMore').addEventListener('click', () => { state.kelLimit = Infinity; renderKelurahan(selection()); });
@@ -1488,6 +1714,7 @@ function selectCenter(code) {
   state.failLimit = FAIL_PAGE;
   state.editingFail = null;
   store.set('center', code);
+  highlightLayer.clearLayers();
   prioritizeQueue();
   drawRings();
   fitToSelection();
@@ -1508,8 +1735,7 @@ async function main() {
   setView(store.get('view') || 'map');
   render();
   renderSourceUi();
-  await idb.open();
-  await idb.loadAll();
+  await Promise.all([idb.open().then(() => idb.loadAll()), loadKelurahan()]);
   loadDirty();
 
   // Link setup dari perangkat lain: #script=… atau #csv=…

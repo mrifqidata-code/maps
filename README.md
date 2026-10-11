@@ -4,12 +4,12 @@ Aplikasi (bisa di-install di HP & laptop) untuk memvisualisasikan persebaran mem
 
 **Link aplikasi:** https://mrifqidata-code.github.io/maps/
 
-- **Peta** (OpenStreetMap + Leaflet), mode **Cluster / Pin / Heatmap**
+- **Peta** (OpenStreetMap + Leaflet), mode **Cluster / Pin / Heatmap / Wilayah** (warna per kelurahan)
   - *Semua center* → warna pin per center
   - *Satu center* → warna pin per **bulan registrasi**. Ketuk bulan di legenda untuk menyembunyikan/menampilkan. Ada lingkaran jarak 5/10/15 km.
   - Ketuk pin → nama (atau Sparks ID bila kolomnya ada), center, tanggal regis, alamat, jarak ke center, kelurahan
 - **Statistik**: member terjauh (*longest range*), rata-rata & median jarak, ringkasan per center
-- **Kelurahan**: jumlah member per kelurahan, terbanyak di atas (ketuk baris → zoom di peta)
+- **Kelurahan**: jumlah member per kelurahan resmi (batas wilayah Dukcapil), terbanyak di atas (ketuk baris → batas kelurahan di peta)
 - **Data**: sumber data & sinkron, install aplikasi, server geocoding, cache, dan daftar alamat yang gagal di-geocode (bisa diedit & dicari ulang)
 - Jarak dihitung dengan **haversine** (garis lurus) dari lokasi member ke center-nya masing-masing.
 
@@ -64,10 +64,22 @@ Default-nya **Otomatis**: memakai Nominatim, dan jika Nominatim menolak akses (m
 1. Alamat dibersihkan (RT/RW, nomor rumah, blok, kode pos dibuang; singkatan seperti `Jl.`, `Gg.`, `Komp.`, `Pd.` diperluas).
 2. Dicari di sekitar center member tersebut (± 33 km) lebih dulu, lalu se-Jabodetabek bila belum ketemu.
 3. Bila alamat lengkap tidak ketemu, dicoba bagian area (kelurahan/kecamatan) atau nama jalannya saja. Hasil seperti ini ditandai **“Lokasi perkiraan”** di popup.
-4. Kelurahan diambil dari detail alamat hasil geocoding; bila kosong, dilakukan **reverse geocoding** pada titik tersebut.
+4. **Kelurahan ditentukan dari batas wilayah resmi**: titik hasil geocoding dicek masuk ke poligon kelurahan/desa yang mana (lihat bagian *Data batas kelurahan*). Untuk titik berstatus *Lokasi perkiraan*, bila alamat menyebut nama kelurahan yang letaknya ≤ 4 km dari titik, nama dari alamat yang dipakai (ditandai di popup).
 5. Hasil yang hanya cocok di level kota/provinsi dianggap **gagal** (tidak dipetakan), supaya jarak tidak menyesatkan. Alamat itu muncul di daftar gagal untuk dicek manual.
 
 Baris tanpa alamat (atau berisi teks yang bukan alamat) dilewati dan dihitung sebagai “Tanpa alamat”.
+
+## Data batas kelurahan
+
+`data/kelurahan-jabodetabek.json` berisi batas 1.508 kelurahan/desa se-Jabodetabek (DKI Jakarta, Kota & Kab. Bekasi, Kota & Kab. Tangerang, Tangerang Selatan, Depok, Kota & Kab. Bogor), disederhanakan ke ketelitian ± 13 m. Sumber: Portal GIS Dukcapil Kemendagri, lewat [pararawendy/border-desa-indonesia-geojson](https://github.com/pararawendy/border-desa-indonesia-geojson) (repo tersebut tidak mencantumkan lisensi). Dibangun ulang dengan:
+
+```
+python3 tools/build_kelurahan.py path/ke/indonesia_villages_border.geojson
+```
+
+Dipakai untuk: nama kelurahan/kecamatan/kota resmi di popup & tabel, mode peta **Wilayah** (warna per kelurahan menurut jumlah member), dan garis batas saat baris di tab Kelurahan diketuk. Hasil geocoding lama tidak perlu diulang: kelurahan dihitung ulang dari titik yang tersimpan. Titik di luar Jabodetabek memakai label dari geocoder.
+
+Ketepatan kelurahan mengikuti ketepatan titik: alamat yang hanya cocok sampai nama jalan/area bisa jatuh di kelurahan tetangga.
 
 ## Kolom yang dibaca
 
