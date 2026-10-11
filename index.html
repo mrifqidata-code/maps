@@ -31,6 +31,7 @@
         <button type="button" data-view="map" aria-current="page"><svg viewBox="0 0 24 24"><path d="M9 4 3 6v14l6-2 6 2 6-2V4l-6 2-6-2z"/><path d="M9 4v14"/><path d="M15 6v14"/></svg>Peta</button>
         <button type="button" data-view="stats"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>Statistik</button>
         <button type="button" data-view="kel"><svg viewBox="0 0 24 24"><path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/></svg>Kelurahan</button>
+        <button type="button" data-view="komp"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.5"/></svg>Kompetitor</button>
         <button type="button" data-view="data"><svg viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 11v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></svg>Data<span class="tab-dot" id="dataDot" hidden></span></button>
       </nav>
     </div>
@@ -63,6 +64,10 @@
     <section class="view" id="v-map">
       <div class="map-head">
         <div class="kpis-mini" id="miniKpis"></div>
+        <div class="map-tools">
+          <button type="button" class="toggle-btn" id="btnKomp" aria-pressed="false"><span class="omark-mini" aria-hidden="true"></span>Kompetitor</button>
+          <button type="button" class="toggle-btn" id="btnKompHi" aria-pressed="false" hidden title="Sorot member yang lebih dekat ke cabang Studiorenang daripada ke center Sparks-nya">Sorot rawan</button>
+        </div>
         <div class="seg" role="group" aria-label="Mode tampilan peta">
           <button type="button" data-mode="cluster" aria-pressed="true">Cluster</button>
           <button type="button" data-mode="pins" aria-pressed="false">Pin</button>
@@ -108,6 +113,29 @@
       <div class="table-wrap"><table class="tbl" id="tblKel"></table></div>
       <button id="btnKelMore" class="btn full" type="button" hidden></button>
       <p class="note">Kelurahan ditentukan dari batas wilayah resmi Dukcapil tempat titik alamat jatuh. Untuk alamat yang lokasinya perkiraan, nama kelurahan yang tertulis di alamat dipakai bila letaknya berdekatan. Ketuk baris untuk melihat batasnya di peta.</p>
+    </section>
+
+    <!-- ============ KOMPETITOR ============ -->
+    <section class="view" id="v-komp" hidden>
+      <div id="kSrc" class="ksrc" role="status" aria-live="polite"></div>
+      <div class="kcontrols">
+        <label class="grp"><span>Periode</span><select id="kMonth" aria-label="Pilih bulan"></select></label>
+        <div class="grp"><span>Paket</span><div class="seg" id="kDur" role="group" aria-label="Durasi paket"></div></div>
+        <div class="grp"><span>Jarak</span><div class="seg" id="kMode" role="group" aria-label="Cara menghitung jarak"></div></div>
+        <div class="grp"><span>Maks.</span><div class="seg" id="kRadius" role="group" aria-label="Batas jarak"></div></div>
+        <label class="grp check"><input type="checkbox" id="kShade"> Warnai wilayah per jumlah cabang (di peta)</label>
+      </div>
+      <article class="card" id="kPanel"></article>
+
+      <div class="sec-head"><h2>Ringkasan per center</h2><span class="hint">Ketuk baris untuk memilih center</span></div>
+      <p class="note" id="kTblCap" style="margin:-4px 2px 10px"></p>
+      <div class="table-wrap"><table class="tbl ktbl" id="kTbl"></table></div>
+
+      <div class="sec-head"><h2>Member vs kompetitor</h2></div>
+      <div id="kCross"></div>
+
+      <div class="sec-head"><h2>Catatan data</h2></div>
+      <div class="card kmethod" id="kMethod"></div>
     </section>
 
     <!-- ============ DATA ============ -->
@@ -194,6 +222,7 @@
   <script src="vendor/markercluster/leaflet.markercluster.js"></script>
   <script src="vendor/leaflet-heat/leaflet-heat.js"></script>
   <script src="vendor/papaparse/papaparse.min.js"></script>
+  <script src="kompetitor.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

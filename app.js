@@ -5,20 +5,53 @@
 
 // ---------------------------------------------------------------- konfigurasi
 
-const CENTERS = {
-  HIB: { lat: -6.179084581029557, lon: 106.97414478968899, color: '#2a78d6',
+// Daftar center bawaan. Bila Apps Script tersambung, daftar diambil dari tab "Centers" di sheet.
+const DEFAULT_CENTERS = [
+  { code: 'HIB', name: 'Harapan Indah Bekasi', lat: -6.179084581029557, lon: 106.97414478968899,
     addr: 'Mega Office Park, Jl. Harapan Indah Boulevard, Medan Satria, Kota Bekasi 17132' },
-  KLM: { lat: -6.239288418633617, lon: 106.8997994939914, color: '#eb6834',
+  { code: 'KLM', name: 'Kalimalang', lat: -6.239288418633617, lon: 106.8997994939914,
     addr: 'Jl. Pahlawan Revolusi No.11, Pd. Bambu, Duren Sawit, Jakarta Timur 13430' },
-  KWC: { lat: -6.2185146814319925, lon: 106.61665600503935, color: '#1baf7a',
+  { code: 'KWC', name: 'Karawaci', lat: -6.2185146814319925, lon: 106.61665600503935,
     addr: 'Jl. Palem Semi, Panunggangan Barat, Cibodas, Kota Tangerang 15318' },
-  PML: { lat: -6.346124651378747, lon: 106.69648245109295, color: '#eda100',
+  { code: 'PML', name: 'Pamulang', lat: -6.346124651378747, lon: 106.69648245109295,
     addr: 'Jl. Raya Puspitek, Babakan, Setu, Tangerang Selatan 15315' },
-  BTU: { lat: -6.292965677930978, lon: 106.72602235903597, color: '#e87ba4',
+  { code: 'BTU', name: 'Bintaro U-Town', lat: -6.292965677930978, lon: 106.72602235903597,
     addr: 'Bintaro U-Town Jaya, Jl. Boulevard UPJ No.1, Sawah Baru, Ciputat, Tangerang Selatan 15413' },
-  TMP: { lat: -6.124072093581825, lon: 106.70609238967546, color: '#008300',
+  { code: 'TMP', name: 'Taman Palem', lat: -6.124072093581825, lon: 106.70609238967546,
     addr: 'Jl. Palem Raja Barat No.10, Pegadungan, Kalideres, Jakarta Barat 11830' },
-};
+];
+const CENTER_COLORS = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300', '#4a3aa7', '#e34948'];
+const CENTERS = {}; // kode -> {code, name, lat, lon, addr, color}
+
+// Mengganti daftar center. Mengembalikan true bila isinya berubah.
+function setCenters(list) {
+  const valid = (Array.isArray(list) ? list : [])
+    .map((c) => ({
+      code: String(c.code || '').trim().toUpperCase(), name: String(c.name || '').trim(), addr: String(c.addr || '').trim(),
+      lat: Number(c.lat), lon: Number(c.lon), color: String(c.color || '').trim(), active: c.active !== false,
+    }))
+    .filter((c) => c.code && c.active && Number.isFinite(c.lat) && Number.isFinite(c.lon) && Math.abs(c.lat) <= 90 && Math.abs(c.lon) <= 180);
+  const src = valid.length ? valid : DEFAULT_CENTERS;
+  const next = {};
+  src.forEach((c, i) => {
+    if (next[c.code]) return;
+    const color = /^#[0-9a-f]{6}$/i.test(c.color || '') ? c.color
+      : (CENTER_COLORS[i] || `hsl(${Math.round((i * 137.508) % 360)}, 62%, 46%)`);
+    next[c.code] = { code: c.code, name: c.name || c.code, lat: c.lat, lon: c.lon, addr: c.addr || '', color };
+  });
+  const changed = JSON.stringify(next) !== JSON.stringify(CENTERS);
+  for (const k of Object.keys(CENTERS)) delete CENTERS[k];
+  Object.assign(CENTERS, next);
+  if (valid.length) store.set('centers', JSON.stringify(Object.values(next)));
+  const sub = document.querySelector('.brand p');
+  if (sub) sub.textContent = Object.keys(CENTERS).join(' · ');
+  if (changed && typeof map !== 'undefined' && map) {
+    if (state.center !== 'ALL' && !CENTERS[state.center]) state.center = 'ALL';
+    drawCenters();
+    drawRings();
+  }
+  return changed;
+}
 const OTHER_COLOR = '#898781';
 const MONTH_COLORS = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300',
   '#4a3aa7', '#e34948', '#0f9fb5', '#8c564b', '#b5179e', '#5b6b00'];
@@ -814,16 +847,20 @@ function initMap() {
   highlightLayer = L.layerGroup().addTo(map);
   centerLayer = L.layerGroup().addTo(map);
 
+  drawCenters();
+  fitToSelection();
+}
+
+function drawCenters() {
+  centerLayer.clearLayers();
   for (const [code, c] of Object.entries(CENTERS)) {
     L.marker([c.lat, c.lon], {
-      icon: L.divIcon({ html: `<div class="cmark" style="--c:${c.color}">${code}</div>`, className: '', iconSize: [44, 26], iconAnchor: [22, 13] }),
+      icon: L.divIcon({ html: `<div class="cmark" style="--c:${c.color}">${esc(code)}</div>`, className: '', iconSize: [44, 26], iconAnchor: [22, 13] }),
       zIndexOffset: 1000,
       keyboard: true,
       title: `Center ${code}`,
-    }).bindPopup(`<div class="pop"><h3>Center ${esc(code)}</h3><p style="margin:0">${esc(c.addr)}</p></div>`).addTo(centerLayer);
+    }).bindPopup(`<div class="pop"><h3>${esc(code)} · ${esc(c.name)}</h3><p style="margin:0">${esc(c.addr)}</p></div>`).addTo(centerLayer);
   }
-
-  fitToSelection();
 }
 
 function fitToSelection() {
@@ -871,7 +908,7 @@ function popupHtml(m) {
     </dl>${approx}</div>`;
 }
 
-function getMarker(m, g) {
+function getMarker(m, g, x) {
   let mk = markers.get(m.id);
   if (!mk) {
     mk = L.circleMarker([g.lat, g.lon], { radius: 7, weight: 2, color: '#ffffff', fillOpacity: 0.92 });
@@ -880,6 +917,9 @@ function getMarker(m, g) {
   }
   const color = memberColor(m);
   if (mk.options.fillColor !== color) mk.setStyle({ fillColor: color });
+  // Sorot member yang lebih dekat ke cabang kompetitor daripada ke center-nya.
+  const hi = !!(x && kstate.show && kstate.highlight && closerToKomp(x));
+  if (mk.options.hi !== hi) mk.setStyle(hi ? { hi, color: KOMP_COLOR, weight: 3, radius: 8 } : { hi, color: '#ffffff', weight: 2, radius: 7 });
   return mk;
 }
 
@@ -941,6 +981,8 @@ function render() {
   renderCenterTable();
   renderKelurahan(sel);
   renderFailed(sel);
+  renderKompLayer();
+  if (state.view === 'komp') renderKompetitor(sel);
 }
 
 function renderChips() {
@@ -963,9 +1005,10 @@ function renderMapLayers(sel) {
   if (state.mode === 'cluster' || state.mode === 'pins') {
     const want = new Set();
     const toAdd = [];
-    for (const { m, g } of sel.mapped) {
+    for (const x of sel.mapped) {
+      const { m, g } = x;
       want.add(m.id);
-      const mk = getMarker(m, g);
+      const mk = getMarker(m, g, x);
       if (!shownIds.has(m.id)) toAdd.push(mk);
     }
     const toRemove = [...shownIds].filter((id) => !want.has(id)).map((id) => markers.get(id)).filter(Boolean);
@@ -1011,6 +1054,7 @@ function renderRegions(sel) {
     }).bindPopup(`<div class="pop"><h3>${esc(g.kel)}</h3><p style="margin:0 0 6px" class="muted">${esc([g.kec, g.city].filter(Boolean).join(', '))}</p>
       <dl><dt>Member</dt><dd><b>${fmtInt(g.n)}</b> (${fmtPct(g.n / total)})</dd>
       ${g.dn ? `<dt>Rata-rata</dt><dd>${fmtKm(g.dsum / g.dn)} km ke center</dd>` : ''}
+      ${(() => { const n = komp.ready ? nearestOutletOf(`kel:${it.i}`, { lat: it.cy / 1e4, lon: it.cx / 1e4 }) : null; return n && n.id != null ? `<dt>Studiorenang</dt><dd>${esc(komp.outlets[n.id].label)} · ${fmtKm(n.d)} km</dd>` : ''; })()}
       ${g.approx ? `<dt>Perkiraan</dt><dd>${fmtInt(g.approx)} alamat</dd>` : ''}</dl></div>`, { maxWidth: 260 })
       .addTo(regionLayer);
   }
@@ -1382,6 +1426,8 @@ async function loadFromCloud(url, label = 'Data dari Google Sheet') {
   setSrcStatus('Mengambil data & cache dari Google Sheet…');
   const data = await cloudFetch(`${url}${url.includes('?') ? '&' : '?'}action=all`);
   if (!Array.isArray(data.rows)) throw new Error('Apps Script tidak mengirim data member.');
+  if (Array.isArray(data.centers) && data.centers.length) setCenters(data.centers);
+  if (typeof applyKompetitorFeed === 'function') applyKompetitorFeed(data);
   const added = mergeRemoteCache(data.cache);
   cloud.lastSync = Date.now();
   applyRows(data.rows, `${label}${data.sheet ? ` (tab ${data.sheet})` : ''}`);
@@ -1430,14 +1476,15 @@ function renderSourceUi() {
 // ---------------------------------------------------------------- tab & install
 
 function setView(v) {
-  if (!['map', 'stats', 'kel', 'data'].includes(v)) v = 'map';
+  if (!['map', 'stats', 'kel', 'komp', 'data'].includes(v)) v = 'map';
   state.view = v;
   store.set('view', v);
   document.querySelectorAll('.tabs button').forEach((b) => {
     if (b.dataset.view === v) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current');
   });
-  for (const k of ['map', 'stats', 'kel', 'data']) $(`#v-${k}`).hidden = k !== v;
+  for (const k of ['map', 'stats', 'kel', 'komp', 'data']) $(`#v-${k}`).hidden = k !== v;
   if (v === 'map') setTimeout(() => map.invalidateSize(), 0);
+  if (v === 'komp' && state.members) renderKompetitor(selection());
   if (v === 'data') updateCacheInfo();
   window.scrollTo({ top: 0 });
 }
@@ -1726,16 +1773,21 @@ function selectCenter(code) {
 async function main() {
   setGeoMode(store.get('geoProvider'));
   $('#selProvider').value = geo.mode;
+  let storedCenters = null;
+  try { storedCenters = JSON.parse(store.get('centers') || 'null'); } catch { /* abaikan */ }
+  setCenters(storedCenters || DEFAULT_CENTERS);
   const savedCenter = store.get('center');
   if (savedCenter && (savedCenter === 'ALL' || CENTERS[savedCenter])) state.center = savedCenter;
   initMap();
   drawRings();
+  loadKstate();
   bindEvents();
+  bindKompEvents();
   initInstall();
   setView(store.get('view') || 'map');
   render();
   renderSourceUi();
-  await Promise.all([idb.open().then(() => idb.loadAll()), loadKelurahan()]);
+  await Promise.all([idb.open().then(() => idb.loadAll()), loadKelurahan(), loadKompetitor()]);
   loadDirty();
 
   // Link setup dari perangkat lain: #script=… atau #csv=…

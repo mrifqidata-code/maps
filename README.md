@@ -1,6 +1,6 @@
 # Sebaran Member
 
-Aplikasi (bisa di-install di HP & laptop) untuk memvisualisasikan persebaran member berdasarkan alamat, relatif terhadap 6 center (HIB, KLM, KWC, PML, BTU, TMP). Tampilan mengikuti dashboard *Rekap Mingguan Area*: filter center di atas, empat tab **Peta · Statistik · Kelurahan · Data** (di HP tab ada di bawah).
+Aplikasi (bisa di-install di HP & laptop) untuk memvisualisasikan persebaran **member** dan **kompetitor (cabang Studiorenang)** relatif terhadap center Sparks Swim. Tampilan mengikuti dashboard *Rekap Mingguan Area*: filter center di atas, tab **Peta · Statistik · Kelurahan · Kompetitor · Data** (di HP tab ada di bawah). Menggantikan aplikasi terpisah *Persebaran Kompetitor Sparks Swim*.
 
 **Link aplikasi:** https://mrifqidata-code.github.io/maps/
 
@@ -10,6 +10,8 @@ Aplikasi (bisa di-install di HP & laptop) untuk memvisualisasikan persebaran mem
   - Ketuk pin → nama (atau Sparks ID bila kolomnya ada), center, tanggal regis, alamat, jarak ke center, kelurahan
 - **Statistik**: member terjauh (*longest range*), rata-rata & median jarak, ringkasan per center
 - **Kelurahan**: jumlah member per kelurahan resmi (batas wilayah Dukcapil), terbanyak di atas (ketuk baris → batas kelurahan di peta)
+- **Kompetitor** (dari aplikasi *Persebaran Kompetitor*): 45 cabang Studiorenang dengan jarak tempuh motor/garis lurus, harga survei per periode & paket (3/6/12 bulan), harga Sparks (pitch/bottom), gap per sesi, kompetitor utama per center, ringkasan per center. Tombol **Kompetitor** di tab Peta menampilkan cabang + label harga di peta (dan rute motor/radius).
+- **Member vs kompetitor**: berapa member yang rumahnya lebih dekat ke cabang Studiorenang daripada ke center Sparks-nya, per center dan per cabang; tombol **Sorot rawan** menandai member tersebut di peta.
 - **Data**: sumber data & sinkron, install aplikasi, server geocoding, cache, dan daftar alamat yang gagal di-geocode (bisa diedit & dicari ulang)
 - Jarak dihitung dengan **haversine** (garis lurus) dari lokasi member ke center-nya masing-masing.
 
@@ -34,6 +36,28 @@ Catatan:
 - Jika pilihan **Siapa saja (Anyone)** tidak tersedia (dibatasi admin Google Workspace kantor), buat salinan sheet di akun Gmail pribadi lalu pasang script di salinan itu, atau tetap pakai link CSV di bawah.
 - Bila script diubah, buat versi baru: **Terapkan → Kelola deployment → Edit → Versi: Baru**. URL tetap sama.
 - Siapa pun yang memegang URL `/exec` bisa membaca data member. Perlakukan URL itu seperti password; jangan ditaruh di repo.
+
+### Update script (versi dengan Centers & Kompetitor)
+
+Bila sebelumnya sudah memasang Apps Script versi lama:
+
+1. Ganti seluruh isi `Code.gs` dengan [`apps-script/Code.gs`](apps-script/Code.gs) terbaru → **Simpan**.
+2. **Terapkan → Kelola deployment → ikon pensil → Versi: Versi baru → Terapkan**. URL `/exec` tetap sama.
+3. Google akan meminta izin baru (script sekarang juga membaca sheet *Feed Kompetitor*): pilih akun → *Advanced* → *Go to … (unsafe)* → *Allow*. Bila tidak muncul, jalankan sekali fungsi `doGet` dari editor (tombol *Run*) untuk memicu permintaan izin.
+4. Pastikan sheet **Feed Kompetitor** sudah diizinkan menarik data (buka sheet itu, klik sel A2, *Izinkan akses*).
+
+### Daftar center (tab "Centers")
+
+Saat script pertama kali dipanggil, tab **Centers** dibuat otomatis di sheet member dengan 6 center awal: `Kode | Nama | Alamat | Lat | Lon | Warna (opsional) | Aktif`.
+
+- **Tambah center baru**: tambah satu baris. Kode harus sama persis dengan isi kolom `Center` di data member. Lat/Lon dari Google Maps (tekan lama lokasi → salin angka). Warna boleh kosong (otomatis).
+- **Nonaktifkan center**: isi kolom Aktif dengan `FALSE`.
+- Buka ulang aplikasi: center baru langsung muncul di filter, peta, statistik, dan tab Kompetitor. Alamat member center baru di-geocode ulang di sekitar center tersebut.
+- Jarak tempuh motor & rute ke cabang kompetitor sudah dihitung untuk 6 center awal; center baru memakai jarak garis lurus sampai rutenya dihitung ulang.
+
+### Harga kompetitor
+
+Harga **tidak disimpan di repo** (repo publik). Harga dibaca dari sheet *Feed Kompetitor* (`KOMPETITOR_FEED_ID` di `Code.gs`), yang menarik data dari *Sparks Swim - Competitor Analysis*. Cara isi tetap sama: tambah baris di **Log Harga** / **Harga Sparks** / **Ringkasan** di sheet Competitor Analysis, lalu di app tab Kompetitor tekan **Muat ulang harga**. Lokasi & jarak cabang ada di `data/kompetitor.json` (data publik dari studiorenang.com).
 
 ## Alternatif tanpa sinkron: link CSV
 

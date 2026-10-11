@@ -2,14 +2,14 @@
  * File app (index/app.js/app.css) diambil dari jaringan dulu supaya update langsung terpakai;
  * library di vendor/ dan ikon diambil dari cache. Request ke server lain (peta, geocoding,
  * Google Sheet) tidak disentuh. */
-const VERSION = 'sebaran-v3';
+const VERSION = 'sebaran-v4';
 const SHELL = [
-  './', 'index.html', 'app.css', 'app.js', 'manifest.webmanifest',
+  './', 'index.html', 'app.css', 'app.js', 'kompetitor.js', 'manifest.webmanifest',
   'icons/icon.svg', 'icons/icon-192.png', 'icons/icon-512.png',
   'vendor/leaflet/leaflet.css', 'vendor/leaflet/leaflet.js',
   'vendor/markercluster/MarkerCluster.css', 'vendor/markercluster/leaflet.markercluster.js',
   'vendor/leaflet-heat/leaflet-heat.js', 'vendor/papaparse/papaparse.min.js',
-  'data/kelurahan-jabodetabek.json',
+  'data/kelurahan-jabodetabek.json', 'data/kompetitor.json',
 ];
 
 self.addEventListener('install', (e) => {
