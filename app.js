@@ -810,7 +810,19 @@ function renderProgress() {
 let map;
 let clusterLayer;
 let pinLayer;
-let heatLayer;
+let heatGroup;
+const HEAT_OPTS = { radius: 22, blur: 18, maxZoom: 14, minOpacity: 0.35 };
+const HEAT_BLUE = { 0.2: '#b7d3f6', 0.4: '#6da7ec', 0.6: '#2a78d6', 0.8: '#1c5cab', 1: '#0d366b' };
+
+// Gradasi heatmap satu warna: pucat (sedikit member) → warna center → lebih gelap (padat).
+function heatGradient(color) {
+  const m = /^#([0-9a-f]{6})$/i.exec(color || '');
+  if (!m) return { 0.4: color, 1: color };
+  const n = parseInt(m[1], 16);
+  const rgb = [n >> 16, (n >> 8) & 255, n & 255];
+  const mix = (t, k) => `rgb(${rgb.map((v) => Math.round(v + (t - v) * k)).join(',')})`;
+  return { 0.25: mix(255, 0.6), 0.55: mix(255, 0.25), 0.8: color, 1: mix(0, 0.35) };
+}
 let centerLayer;
 let ringLayer;
 let regionLayer;
@@ -838,10 +850,7 @@ function initMap() {
     },
   });
   pinLayer = L.layerGroup();
-  heatLayer = L.heatLayer([], {
-    radius: 22, blur: 18, maxZoom: 14, minOpacity: 0.35,
-    gradient: { 0.2: '#b7d3f6', 0.4: '#6da7ec', 0.6: '#2a78d6', 0.8: '#1c5cab', 1: '#0d366b' },
-  });
+  heatGroup = L.layerGroup();
   regionLayer = L.layerGroup();
   ringLayer = L.layerGroup().addTo(map);
   highlightLayer = L.layerGroup().addTo(map);
@@ -1021,9 +1030,25 @@ function renderMapLayers(sel) {
     }
     shownIds = want;
   }
-  heatLayer.setLatLngs(state.mode === 'heat' ? sel.mapped.map(({ g }) => [g.lat, g.lon, 1]) : []);
+  // Heatmap: "Semua center" → satu lapisan per center dengan warna center-nya; satu center → biru.
+  heatGroup.clearLayers();
+  if (state.mode === 'heat') {
+    if (state.center === 'ALL') {
+      const byCenter = new Map();
+      for (const { m, g } of sel.mapped) {
+        const k = CENTERS[m.center] ? m.center : '*';
+        if (!byCenter.has(k)) byCenter.set(k, []);
+        byCenter.get(k).push([g.lat, g.lon, 1]);
+      }
+      for (const [k, pts] of byCenter) {
+        heatGroup.addLayer(L.heatLayer(pts, { ...HEAT_OPTS, gradient: heatGradient(k === '*' ? OTHER_COLOR : CENTERS[k].color) }));
+      }
+    } else {
+      heatGroup.addLayer(L.heatLayer(sel.mapped.map(({ g }) => [g.lat, g.lon, 1]), { ...HEAT_OPTS, gradient: HEAT_BLUE }));
+    }
+  }
   renderRegions(sel);
-  for (const [mode, layer] of [['cluster', clusterLayer], ['pins', pinLayer], ['heat', heatLayer], ['area', regionLayer]]) {
+  for (const [mode, layer] of [['cluster', clusterLayer], ['pins', pinLayer], ['heat', heatGroup], ['area', regionLayer]]) {
     if (state.mode === mode && !map.hasLayer(layer)) map.addLayer(layer);
     if (state.mode !== mode && map.hasLayer(layer)) map.removeLayer(layer);
   }
