@@ -1,6 +1,8 @@
-/* Sebaran Member — modul kompetitor (cabang Studiorenang).
+/* Sebaran Member — modul kompetitor (semua brand; awalnya cabang Studiorenang).
  * Dipindahkan dari aplikasi "Persebaran Kompetitor Sparks Swim":
- *  - lokasi cabang, jarak tempuh motor & rute: data/kompetitor.json (data publik)
+ *  - daftar cabang: tab "Lokasi Kompetitor" di sheet Competitor Analysis (lewat Apps Script);
+ *    bila belum tersambung, memakai data/kompetitor.json (45 cabang Studiorenang)
+ *  - jarak tempuh motor & rute (6 center awal): data/kompetitor.json (data publik)
  *  - harga (Log Harga, Harga Sparks, kompetitor utama, status): sheet "Feed Kompetitor",
  *    diambil lewat Apps Script yang sama dengan data member. Harga tidak pernah ada di repo.
  * File ini dimuat sebelum app.js dan hanya berisi fungsi; variabel app.js dipakai saat fungsi dipanggil. */
@@ -12,14 +14,17 @@ const KOMP_MODES = { motor: 'Tempuh motor', lurus: 'Garis lurus' };
 const KOMP_RADII = [3, 5, 10];
 const KOMP_RENAME = { 'Aerowold Citra 8': 'Aeroworld Citra 8', BSD: 'BSD (Nusaloka)', 'Sttudio Renang - Karawang': 'Karawang' };
 const KOMP_COLOR = '#d9442b';
+const BRAND_COLORS = ['#d9442b', '#334155', '#92400e', '#0e7490', '#9d174d', '#4d7c0f', '#7b2cbf', '#b45309'];
+const KOMP_SHEET_URL = 'https://docs.google.com/spreadsheets/d/1plqm0d-1sBAig0pzL3PG7jdanmrjSqggSCYcW06aEYQ/edit';
 const BULAN_PJG = ['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'];
 
 const komp = {
-  ready: false, outlets: [], routes: new Map(), regions: [], total: 0, meta: {},
+  ready: false, outlets: [], base: [], motor: new Map(), routes: new Map(), regions: [], total: 0, meta: {},
+  brands: [], listSrc: 'repo', listIssues: [], seeding: false,
   feed: { log: [], sp: [], main: {}, status: {} },
   src: { state: 'none', at: null, msg: '' }, // none | live | err
 };
-const kstate = { month: '', dur: '6 bulan', mode: 'motor', radius: 5, shade: false, show: false, highlight: false };
+const kstate = { month: '', dur: '6 bulan', mode: 'motor', radius: 5, shade: false, show: false, highlight: false, hiddenBrands: new Set() };
 const nearMemo = new Map(); // key alamat member -> {lat, lon, id, d}
 
 const knorm = (s) => String(s == null ? '' : s).toLowerCase().replace(/\s+/g, ' ').trim();
@@ -43,24 +48,91 @@ async function loadKompetitor() {
     const d = await res.json();
     komp.meta = d;
     komp.total = d.outletTotal || d.outlets.length;
-    komp.outlets = d.outlets.map((o, i) => {
-      const key = String(o.name).replace(/\s+/g, ' ').trim();
-      const label = KOMP_RENAME[key] || key;
-      return { ...o, id: i, key, label, ckey: knorm(`Studiorenang ${label}`), trackedBy: [], region: '-' };
-    });
-    komp.routes = new Map(d.routes.map((r) => [`${r.c}|${r.o}`, r.path.split(' ').map((p) => p.split(',').map(Number)).map(([x, y]) => [y, x])]));
     komp.regions = d.regions.map((r) => ({ name: r.name, rings: (r.rings || []).map((s) => s.split(' ').map((p) => p.split(',').map(Number))) }));
-    for (const o of komp.outlets) {
-      const r = komp.regions.find((g) => g.rings.some((ring) => pipLL(o.lng, o.lat, ring)));
-      o.region = r ? r.name : '-';
-    }
-    for (const r of komp.regions) r.count = komp.outlets.filter((o) => o.region === r.name).length;
+    // Daftar bawaan (Studiorenang) + jarak motor & rute, dikunci dengan nama "Brand Cabang".
+    komp.base = d.outlets.map((o) => {
+      const key = String(o.name).replace(/\s+/g, ' ').trim();
+      return { brand: 'Studiorenang', cabang: KOMP_RENAME[key] || key, addr: o.addr, lat: o.lat, lng: o.lng, maps: o.maps || '', m: o.m };
+    });
+    komp.motor = new Map(komp.base.map((o) => [knorm(`${o.brand} ${o.cabang}`), o.m]));
+    komp.routes = new Map(d.routes.map((r) => {
+      const b = komp.base[r.o];
+      return [`${r.c}|${knorm(`${b.brand} ${b.cabang}`)}`, r.path.split(' ').map((p) => p.split(',').map(Number)).map(([x, y]) => [y, x])];
+    }));
+    if (!komp.ready) setOutlets(komp.base, 'repo');
     komp.ready = true;
-    applyMain();
     kstate.month = kstate.month || curMonthKey();
     scheduleRender(true);
   } catch {
     // Tanpa data kompetitor: tab Kompetitor menampilkan pesan.
+  }
+}
+
+// Mengganti daftar cabang. list: [{brand, cabang, addr, lat, lng, maps, note}]
+function setOutlets(list, src) {
+  komp.listSrc = src;
+  komp.outlets = list.map((o, i) => {
+    const brand = String(o.brand || 'Lainnya').trim();
+    const label = String(o.cabang || '').trim();
+    const ckey = knorm(`${brand} ${label}`);
+    const r = komp.regions.find((g) => g.rings.some((ring) => pipLL(o.lng, o.lat, ring)));
+    return {
+      id: i, brand, label, key: label, ckey, addr: o.addr || '', lat: o.lat, lng: o.lng,
+      maps: o.maps || `https://www.google.com/maps/search/?api=1&query=${o.lat},${o.lng}`,
+      note: o.note || '', m: komp.motor.get(ckey) || null, trackedBy: [], region: r ? r.name : '-',
+    };
+  });
+  const order = [...new Set(komp.outlets.map((o) => o.brand))]
+    .sort((a, b) => (a === 'Studiorenang' ? -1 : b === 'Studiorenang' ? 1 : a.localeCompare(b)));
+  komp.brands = order.map((name, i) => ({ name, color: BRAND_COLORS[i] || `hsl(${Math.round((i * 137.508) % 360)}, 55%, 42%)` }));
+  nearMemo.clear();
+  applyMain();
+}
+
+const brandColor = (b) => (komp.brands.find((x) => x.name === b) || {}).color || KOMP_COLOR;
+const visibleOutlets = () => komp.outlets.filter((o) => !kstate.hiddenBrands.has(o.brand));
+const outletName = (o) => `${o.brand} ${o.label}`;
+
+// Baris tab "Lokasi Kompetitor": Brand | Cabang | Alamat | Koordinat (lat, lon) | Link | Aktif | Catatan
+function parseCoord(s) {
+  const m = String(s || '').match(/(-?\d+(?:[.,]\d+)?)\s*[,;\s]\s*(-?\d+(?:[.,]\d+)?)/);
+  if (!m) return null;
+  let a = Number(m[1].replace(',', '.'));
+  let b = Number(m[2].replace(',', '.'));
+  if (Math.abs(a) > 90 && Math.abs(b) <= 90) [a, b] = [b, a]; // tertukar (lon, lat)
+  if (!Number.isFinite(a) || !Number.isFinite(b) || Math.abs(a) > 90 || Math.abs(b) > 180) return null;
+  return [a, b];
+}
+function outletsFromSheet(rows) {
+  const out = [];
+  const issues = [];
+  rows.forEach((r, i) => {
+    const [brand, cabang, addr, coord, maps, aktif, note] = r.map((v) => String(v == null ? '' : v).trim());
+    if (!brand && !cabang && !coord) return;
+    if (/^(false|tidak|no|0)$/i.test(aktif)) return;
+    const ll = parseCoord(coord);
+    if (!cabang || !ll) { issues.push(i + 2); return; }
+    out.push({ brand: brand || 'Lainnya', cabang, addr, lat: ll[0], lng: ll[1], maps, note });
+  });
+  return { out, issues };
+}
+
+async function seedLokasi() {
+  if (komp.seeding || !cloud.url || !komp.base.length) return;
+  komp.seeding = true;
+  try {
+    const rows = komp.base.map((o) => [o.brand, o.cabang, o.addr, `${o.lat}, ${o.lng}`, o.maps, true, '']);
+    await cloudFetch(cloud.url, {
+      method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({ action: 'seedLokasi', rows }),
+    });
+    toast('Tab "Lokasi Kompetitor" dibuat di sheet Competitor Analysis');
+    await refreshKompetitor(true);
+  } catch (e) {
+    komp.listIssueMsg = `Tab "Lokasi Kompetitor" belum bisa dibuat: ${e.message}`;
+    scheduleRender(true);
+  } finally {
+    komp.seeding = false;
   }
 }
 
@@ -143,17 +215,28 @@ function applyKompetitorFeed(data) {
   } else if (komp.src.state === 'none') {
     komp.src = { state: 'err', at: null, msg: 'Apps Script belum mengirim Feed Kompetitor. Perbarui script (Code.gs terbaru) lalu deploy versi baru.' };
   }
+  komp.listIssueMsg = '';
+  if (Array.isArray(data.lokasi)) {
+    const { out, issues } = outletsFromSheet(data.lokasi);
+    komp.listIssues = issues;
+    if (out.length) setOutlets(out, 'sheet');
+    else komp.listIssueMsg = 'Tab "Lokasi Kompetitor" kosong; sementara memakai daftar bawaan.';
+  } else if (data.lokasiMissing) {
+    seedLokasi();
+  } else if (data.lokasiError) {
+    komp.listIssueMsg = data.lokasiError;
+  }
   applyMain();
 }
 
-async function refreshKompetitor() {
+async function refreshKompetitor(quiet) {
   if (!cloud.url) return;
   komp.src = { ...komp.src, busy: true };
   renderKompetitor(selection());
   try {
     const data = await cloudFetch(`${cloud.url}${cloud.url.includes('?') ? '&' : '?'}action=kompetitor`);
     applyKompetitorFeed(data);
-    toast('Harga kompetitor diperbarui');
+    if (!quiet) toast('Data kompetitor diperbarui');
   } catch (e) {
     komp.src = { state: 'err', at: komp.src.at, msg: e.message };
   }
@@ -171,7 +254,8 @@ const motorAvail = (code) => komp.outlets.some((o) => o.m && o.m[code]);
 const motorKm = (o, code) => (o.m && o.m[code] ? o.m[code][0] : null);
 const motorMin = (o, code) => (o.m && o.m[code] ? o.m[code][1] : null);
 const useMotor = (code) => kstate.mode === 'motor' && motorAvail(code);
-const kmOf = (o, code) => (useMotor(code) ? (motorKm(o, code) ?? Infinity) : straightKm(o, code));
+// Tempuh motor bila rutenya ada; selain itu (cabang/center baru) garis lurus.
+const kmOf = (o, code) => (kstate.mode === 'motor' && motorKm(o, code) != null ? motorKm(o, code) : straightKm(o, code));
 function nearestCenterOf(o) {
   let best = null;
   for (const code of Object.keys(CENTERS)) { const v = kmOf(o, code); if (!best || v < best.v) best = { c: code, v }; }
@@ -199,8 +283,8 @@ function sparksAt(center, dur, end) {
 function gapOf(sp, p) { if (!sp || !p || !sp.bottom || !sp.sesi || !p.sesi) return null; return (sp.bottom / sp.sesi) / (p.harga / p.sesi) - 1; }
 const curPrice = (o) => priceAt(o, kstate.dur, monthEndT(kstate.month || curMonthKey()));
 const trackedOf = (code) => komp.outlets.find((o) => o.trackedBy.includes(code)) || null;
-const nearestOutlets = (code, n) => komp.outlets.slice().sort((a, b) => kmOf(a, code) - kmOf(b, code)).slice(0, n);
-const countWithin = (code, R) => komp.outlets.filter((o) => kmOf(o, code) <= R).length;
+const nearestOutlets = (code, n) => visibleOutlets().sort((a, b) => kmOf(a, code) - kmOf(b, code)).slice(0, n);
+const countWithin = (code, R) => visibleOutlets().filter((o) => kmOf(o, code) <= R).length;
 const isNearest = (tr, n, code) => tr.id === n.id || kmOf(tr, code) - kmOf(n, code) < 0.3;
 
 function changeTag(o) {
@@ -220,12 +304,12 @@ function priceLine(o, center) {
 
 // ---------------------------------------------------------------- member vs kompetitor
 
-// Cabang Studiorenang terdekat (garis lurus) dari titik alamat member.
+// Cabang kompetitor terdekat (garis lurus, brand yang ditampilkan) dari titik alamat member.
 function nearestOutletOf(key, g) {
   const memo = nearMemo.get(key);
   if (memo && memo.lat === g.lat && memo.lon === g.lon) return memo;
   let best = null;
-  for (const o of komp.outlets) {
+  for (const o of visibleOutlets()) {
     const d = haversine(g.lat, g.lon, o.lat, o.lng);
     if (!best || d < best.d) best = { id: o.id, d };
   }
@@ -233,7 +317,7 @@ function nearestOutletOf(key, g) {
   nearMemo.set(key, res);
   return res;
 }
-// true bila member tinggal lebih dekat ke cabang Studiorenang daripada ke center Sparks-nya.
+// true bila member tinggal lebih dekat ke cabang kompetitor daripada ke center Sparks-nya.
 function closerToKomp(x) {
   if (!komp.ready || x.dist == null) return false;
   return nearestOutletOf(x.m.key, x.g).d < x.dist;
@@ -273,7 +357,7 @@ function ensureKompLayer() {
 function outletIcon(o, hit, price) {
   const cls = `omark${hit ? ' hit' : ''}${o.trackedBy.length ? ' trk' : ''}`;
   return L.divIcon({
-    html: `<div class="${cls}"><i></i>${price ? `<span class="opill">${fmtJt(price.harga)}</span>` : ''}</div>`,
+    html: `<div class="${cls}" style="--bc:${brandColor(o.brand)}"><i></i>${price ? `<span class="opill">${fmtJt(price.harga)}</span>` : ''}</div>`,
     className: '', iconSize: [16, 16], iconAnchor: [8, 8],
   });
 }
@@ -286,7 +370,7 @@ function outletPopup(o) {
   const mk = c ? motorKm(o, c) : null;
   let pr = `<p class="muted" style="margin:8px 0 2px">Paket ${kstate.dur}, s.d. ${monthNameK(kstate.month)}</p>`;
   if (p) {
-    pr += `<dl><dt>Studiorenang</dt><dd><b>${fmtRp(p.harga)}</b>${p.sesi ? ` · ${p.sesi} sesi (${fmtRp(p.harga / p.sesi)}/sesi)` : ''}<br><span class="muted">survei ${fmtDateK(p.t)}${p.prev ? ` · sebelumnya ${fmtRp(p.prev.harga)}` : ''}</span></dd>
+    pr += `<dl><dt>${esc(o.brand)}</dt><dd><b>${fmtRp(p.harga)}</b>${p.sesi ? ` · ${p.sesi} sesi (${fmtRp(p.harga / p.sesi)}/sesi)` : ''}<br><span class="muted">survei ${fmtDateK(p.t)}${p.prev ? ` · sebelumnya ${fmtRp(p.prev.harga)}` : ''}</span></dd>
       ${sp ? `<dt>Sparks ${esc(c)}</dt><dd>bottom ${fmtRp(sp.bottom)}${sp.sesi ? ` (${fmtRp(sp.bottom / sp.sesi)}/sesi)` : ''}</dd>` : ''}
       ${g != null ? `<dt>Gap/sesi</dt><dd><b>${fmtGap(g)}</b> ${g >= 0 ? '(Sparks lebih mahal)' : '(Sparks lebih murah)'}</dd>` : ''}</dl>${changeTag(o) ? `<p style="margin:6px 0 0">${changeTag(o)}</p>` : ''}`;
   } else {
@@ -296,7 +380,7 @@ function outletPopup(o) {
   const tr = o.trackedBy.length ? `<p style="margin:6px 0 0"><span class="ktag trk">Kompetitor utama ${esc(o.trackedBy.join(', '))}</span></p>` : '';
   const po = komp.lastCross && komp.lastCross.perOutlet.get(o.id);
   const mem = po ? `<p style="margin:6px 0 0"><b>${fmtInt(po.closer)}</b> member lebih dekat ke cabang ini daripada ke center Sparks-nya</p>` : '';
-  return `<div class="pop"><h3>Studiorenang ${esc(o.label)}</h3><p style="margin:0 0 6px" class="muted">${esc(o.addr)}</p>
+  return `<div class="pop"><h3>${esc(outletName(o))}</h3><p style="margin:0 0 6px" class="muted">${esc(o.addr)}${o.note ? `<br>${esc(o.note)}` : ''}</p>
     <dl>${c ? `<dt>${state.center === 'ALL' ? 'Center terdekat' : 'Ke center'}</dt><dd><b>${esc(c)}</b></dd>
       <dt>Tempuh motor</dt><dd>${mk != null ? `${kmTxt(mk)}${motorMin(o, c) != null ? ` · ±${motorMin(o, c)} mnt` : ''}` : '<span class="muted">belum dihitung</span>'}</dd>
       <dt>Garis lurus</dt><dd>${kmTxt(straightKm(o, c))}</dd>` : ''}</dl>
@@ -310,10 +394,13 @@ function renderKompLayer() {
   outletMarkers.clear();
   const visible = komp.ready && kstate.show;
   if (visible && !map.hasLayer(layer)) layer.addTo(map);
+  renderKompLegend();
   if (!visible) { if (map.hasLayer(layer)) map.removeLayer(layer); return; }
   const all = state.center === 'ALL';
   // Wilayah kota/kab diwarnai menurut jumlah cabang.
+  const vis = visibleOutlets();
   if (kstate.shade) {
+    for (const r of komp.regions) r.count = vis.filter((o) => o.region === r.name).length;
     const max = Math.max(1, ...komp.regions.map((r) => r.count));
     for (const r of komp.regions) {
       if (!r.count) continue;
@@ -328,24 +415,40 @@ function renderKompLayer() {
     const c = CENTERS[code];
     if (!c) continue;
     if (useMotor(code)) {
-      for (const o of komp.outlets) {
+      for (const o of vis) {
         if (!(kmOf(o, code) <= kstate.radius)) continue;
-        const pts = komp.routes.get(`${code}|${o.id}`);
+        const pts = komp.routes.get(`${code}|${o.ckey}`);
         if (pts) L.polyline(pts, { color: '#1c5cab', weight: 2.5, opacity: all ? 0.45 : 0.75, interactive: false }).addTo(layer);
       }
     } else {
       L.circle([c.lat, c.lon], { radius: kstate.radius * 1000, color: '#1c5cab', weight: 1.5, opacity: 0.8, fillColor: '#1c5cab', fillOpacity: 0.05, interactive: false }).addTo(layer);
     }
   }
-  for (const o of komp.outlets) {
+  for (const o of vis) {
     const hit = inRadius(o);
     const p = curPrice(o);
     const showPrice = p && (hit || all);
-    const mk = L.marker([o.lat, o.lng], { icon: outletIcon(o, hit, showPrice ? p : null), zIndexOffset: hit ? 600 : 500, title: `Studiorenang ${o.label}`, keyboard: true })
+    const mk = L.marker([o.lat, o.lng], { icon: outletIcon(o, hit, showPrice ? p : null), zIndexOffset: hit ? 600 : 500, title: outletName(o), keyboard: true })
       .bindPopup(() => outletPopup(o), { maxWidth: 290 })
       .addTo(layer);
     outletMarkers.set(o.id, mk);
   }
+}
+
+function renderKompLegend() {
+  const el = $('#kLegend');
+  if (!el) return;
+  el.hidden = !(komp.ready && kstate.show);
+  if (el.hidden) return;
+  el.innerHTML = `<span class="lg-title">Kompetitor</span>${komp.brands.map((b) => `<button type="button" class="row${kstate.hiddenBrands.has(b.name) ? ' off' : ''}" data-brand="${esc(b.name)}" aria-pressed="${!kstate.hiddenBrands.has(b.name)}"><span class="sw dia" style="--c:${b.color}"></span>${esc(b.name)} <span class="n">${fmtInt(komp.outlets.filter((o) => o.brand === b.name).length)}</span></button>`).join('')}`;
+}
+
+function toggleBrand(name) {
+  if (kstate.hiddenBrands.has(name)) kstate.hiddenBrands.delete(name); else kstate.hiddenBrands.add(name);
+  if (kstate.hiddenBrands.size >= komp.brands.length) kstate.hiddenBrands.delete(name); // minimal satu brand tampil
+  nearMemo.clear();
+  saveKstate();
+  scheduleRender(true);
 }
 
 function showOutletOnMap(id) {
@@ -390,6 +493,8 @@ function renderKompControls() {
   $('#kMode').innerHTML = Object.keys(KOMP_MODES).map((m) => `<button type="button" data-m="${m}" aria-pressed="${kstate.mode === m}">${KOMP_MODES[m]}</button>`).join('');
   $('#kRadius').innerHTML = KOMP_RADII.map((r) => `<button type="button" data-r="${r}" aria-pressed="${kstate.radius === r}">${r} km</button>`).join('');
   $('#kShade').checked = kstate.shade;
+  $('#kBrands').innerHTML = komp.brands.map((b) => `<button type="button" data-brand="${esc(b.name)}" aria-pressed="${!kstate.hiddenBrands.has(b.name)}"><span class="bdot" style="--c:${b.color}"></span>${esc(b.name)}</button>`).join('');
+  $('#kBrandGrp').hidden = komp.brands.length < 2;
 }
 
 function renderKompSrc() {
@@ -415,6 +520,14 @@ function renderKompSrc() {
   }
   box.className = cls;
   box.innerHTML = `<span class="dot" aria-hidden="true"></span><span class="msg">${esc(msg)}</span><span class="acts">${acts}</span>`;
+  const n = komp.outlets.length;
+  const brands = komp.brands.map((b) => b.name).join(', ');
+  let list = komp.listSrc === 'sheet'
+    ? `Daftar cabang: tab <b>Lokasi Kompetitor</b> di sheet Competitor Analysis — ${fmtInt(n)} cabang (${esc(brands)}).`
+    : `Daftar cabang: data bawaan aplikasi — ${fmtInt(n)} cabang ${esc(brands)}.${cloud.url ? (komp.seeding ? ' Membuat tab Lokasi Kompetitor…' : '') : ' Hubungkan Apps Script supaya daftar bisa diubah dari sheet.'}`;
+  if (komp.listIssues.length) list += ` <span class="warn-txt">${komp.listIssues.length} baris dilewati karena kolom Cabang/Koordinat kosong atau tidak valid (baris ${komp.listIssues.slice(0, 8).join(', ')}${komp.listIssues.length > 8 ? ', …' : ''}).</span>`;
+  if (komp.listIssueMsg) list += ` <span class="warn-txt">${esc(komp.listIssueMsg)}</span>`;
+  $('#kList').innerHTML = `<span>${list}</span><a class="btn sm" href="${KOMP_SHEET_URL}" target="_blank" rel="noopener">Tambah / ubah cabang</a>`;
 }
 
 function outletItem(o, code) {
@@ -422,8 +535,9 @@ function outletItem(o, code) {
   const v = kmOf(o, c);
   const trk = o.trackedBy.length ? '<span class="ktag trk">Kompetitor utama</span> ' : '';
   const dist = `${code ? '' : `Terdekat ke ${esc(c)} · `}${useMotor(c) && motorMin(o, c) != null ? `±${motorMin(o, c)} mnt` : 'garis lurus'}`;
-  return `<li><button type="button" data-oid="${o.id}"><span class="odot${o.trackedBy.length ? ' trk' : ''}"></span><span class="nm">${esc(o.label)}</span><span class="km">${kmTxt(v)}</span>
-    <span class="meta">${trk}${priceLine(o, c)} ${changeTag(o)}<br>${dist} · ${esc(o.region)}</span></button></li>`;
+  const dist2 = kstate.mode === 'motor' && motorKm(o, c) == null ? `${code ? '' : `Terdekat ke ${esc(c)} · `}garis lurus (rute belum ada)` : null;
+  return `<li><button type="button" data-oid="${o.id}"><span class="odot${o.trackedBy.length ? ' trk' : ''}" style="--c:${brandColor(o.brand)}"></span><span class="nm">${komp.brands.length > 1 ? `<span class="muted">${esc(o.brand)}</span> ` : ''}${esc(o.label)}</span><span class="km">${kmTxt(v)}</span>
+    <span class="meta">${trk}${priceLine(o, c)} ${changeTag(o)}<br>${dist2 || dist} · ${esc(o.region)}</span></button></li>`;
 }
 
 function spBox(code) {
@@ -443,30 +557,33 @@ function renderKompPanel() {
       const tr = trackedOf(c.code);
       const p = tr ? priceAt(tr, kstate.dur, end) : null;
       const g = p ? gapOf(sparksAt(c.code, kstate.dur, end), p) : null;
-      const trTxt = tr ? `utama ${esc(tr.label)}: ${p ? fmtRp(p.harga) + (g != null ? ` (gap ${fmtGap(g)})` : '') : 'belum ada harga'}`
+      const trTxt = tr ? `utama ${esc(outletName(tr))}: ${p ? fmtRp(p.harga) + (g != null ? ` (gap ${fmtGap(g)})` : '') : 'belum ada harga'}`
         : (komp.src.state === 'live' ? 'kompetitor utama belum diisi' : '');
       return `<button type="button" class="kcard" data-center="${esc(c.code)}"><span class="code" style="--c:${c.color}">${esc(c.code)}</span><span class="nm">${esc(c.name)}</span>
         <span class="km">${countWithin(c.code, R)} cabang</span><span class="meta">dalam ${R} ${unitTxt(c.code)}${n ? ` · terdekat ${esc(n.label)} ${kmTxt(kmOf(n, c.code))}` : ''}${trTxt ? `<br>${trTxt}` : ''}</span></button>`;
     }).join('');
-    const priced = komp.outlets.filter((o) => priceAt(o, kstate.dur, end)).length;
-    panel.innerHTML = `<div class="khead"><h2>Semua center</h2><p class="muted">${komp.outlets.length} cabang Studiorenang di Jabodetabek &amp; Karawang (dari ${komp.total} di seluruh Indonesia)</p></div>
-      ${komp.src.state === 'live' ? `<div class="kstats"><div><b>${priced}</b><small>cabang punya harga paket ${kstate.dur} s.d. ${monthShortK(kstate.month)}</small></div><div><b>${komp.outlets.length - priced}</b><small>cabang belum disurvei untuk paket ini</small></div></div>` : ''}
+    const vis = visibleOutlets();
+    const priced = vis.filter((o) => priceAt(o, kstate.dur, end)).length;
+    const byBrand = komp.brands.filter((b) => !kstate.hiddenBrands.has(b.name)).map((b) => `${fmtInt(vis.filter((o) => o.brand === b.name).length)} ${esc(b.name)}`).join(' · ');
+    panel.innerHTML = `<div class="khead"><h2>Semua center</h2><p class="muted">${fmtInt(vis.length)} cabang kompetitor: ${byBrand}</p></div>
+      ${komp.src.state === 'live' ? `<div class="kstats"><div><b>${priced}</b><small>cabang punya harga paket ${kstate.dur} s.d. ${monthShortK(kstate.month)}</small></div><div><b>${vis.length - priced}</b><small>cabang belum disurvei untuk paket ini</small></div></div>` : ''}
       <div class="kcards">${cards}</div>`;
     return;
   }
   const c = CENTERS[state.center];
   const near = nearestOutlets(c.code, 1)[0];
-  const within = komp.outlets.filter((o) => kmOf(o, c.code) <= R).sort((a, b) => kmOf(a, c.code) - kmOf(b, c.code));
+  const within = visibleOutlets().filter((o) => kmOf(o, c.code) <= R).sort((a, b) => kmOf(a, c.code) - kmOf(b, c.code));
   const tracked = trackedOf(c.code);
   let note = '';
-  if (tracked && isNearest(tracked, near, c.code)) note = `<div class="knote ok">Kompetitor utama di sheet (${esc(tracked.label)}) memang cabang terdekat.</div>`;
-  else if (tracked) note = `<div class="knote">Di sheet kompetitor utama <b>${esc(tracked.label)}</b> (${kmTxt(kmOf(tracked, c.code))}), padahal cabang terdekat <b>${esc(near.label)}</b> (${kmTxt(kmOf(near, c.code))}).</div>`;
+  if (tracked && near && isNearest(tracked, near, c.code)) note = `<div class="knote ok">Kompetitor utama di sheet (${esc(outletName(tracked))}) memang cabang terdekat.</div>`;
+  else if (tracked && near) note = `<div class="knote">Di sheet kompetitor utama <b>${esc(outletName(tracked))}</b> (${kmTxt(kmOf(tracked, c.code))}), padahal cabang terdekat <b>${esc(outletName(near))}</b> (${kmTxt(kmOf(near, c.code))}).</div>`;
   if (kstate.mode === 'motor' && !motorAvail(c.code)) note += `<div class="knote">Rute motor untuk ${esc(c.code)} belum dihitung, jadi jarak memakai garis lurus.</div>`;
+  if (!near) { panel.innerHTML = `<div class="khead"><h2>${esc(c.code)} · ${esc(c.name)}</h2></div><p class="muted">Tidak ada cabang kompetitor yang ditampilkan.</p>`; return; }
   const list = within.length ? `<ul class="olist">${within.map((o) => outletItem(o, c.code)).join('')}</ul>`
     : `<p class="muted" style="margin:0">Tidak ada cabang dalam ${R} ${unitTxt(c.code)}. Tiga terdekat:</p><ul class="olist">${nearestOutlets(c.code, 3).map((o) => outletItem(o, c.code)).join('')}</ul>`;
   panel.innerHTML = `<div class="khead"><h2>${esc(c.code)} · ${esc(c.name)}</h2><p class="muted">${esc(c.addr)}</p></div>
-    <div class="kstats"><div><b>${within.length}</b><small>cabang Studiorenang ≤ ${R} ${unitTxt(c.code)}</small></div>
-      <div><b>${kmTxt(kmOf(near, c.code))}</b><small>ke cabang terdekat (${esc(near.label)})${minTxt(near, c.code)}</small></div></div>
+    <div class="kstats"><div><b>${within.length}</b><small>cabang kompetitor ≤ ${R} ${unitTxt(c.code)}</small></div>
+      <div><b>${kmTxt(kmOf(near, c.code))}</b><small>ke cabang terdekat (${esc(outletName(near))})${minTxt(near, c.code)}</small></div></div>
     ${komp.src.state === 'live' ? spBox(c.code) : ''}${note}${list}`;
 }
 
@@ -476,7 +593,7 @@ function renderKompTable() {
   const rows = Object.values(CENTERS).map((c) => {
     const n = nearestOutlets(c.code, 1)[0];
     const tr = trackedOf(c.code);
-    const ok = tr && isNearest(tr, n, c.code);
+    const ok = tr && n && isNearest(tr, n, c.code);
     const pill = !live ? '' : !tr ? '<span class="pill warn">Belum diisi</span>' : ok ? '<span class="pill ok">Terdekat</span>' : '<span class="pill warn">Bukan yang terdekat</span>';
     const dd = (o) => `<span class="muted">${kmTxt(kmOf(o, c.code))}${minTxt(o, c.code)}</span>`;
     const sp = sparksAt(c.code, kstate.dur, end);
@@ -485,8 +602,8 @@ function renderKompTable() {
     const gp = g == null ? '–' : `<span class="pill ${g > 0.1 ? 'bad' : g >= 0.05 ? 'warn' : 'ok'}">${fmtGap(g)}</span>`;
     return `<tr data-center="${esc(c.code)}"><td><span class="cdot" style="--c:${c.color}"></span><b>${esc(c.code)}</b><br><span class="muted">${esc(c.name)}</span></td>
       <td class="num">${countWithin(c.code, 3)}</td><td class="num">${countWithin(c.code, 5)}</td><td class="num">${countWithin(c.code, 10)}</td>
-      <td>${n ? `${esc(n.label)}<br>${dd(n)}` : '–'}</td>
-      <td>${tr ? `${esc(tr.label)}<br>${dd(tr)}<br>${pill}` : pill || '–'}</td>
+      <td>${n ? `${esc(outletName(n))}<br>${dd(n)}` : '–'}</td>
+      <td>${tr ? `${esc(outletName(tr))}<br>${dd(tr)}<br>${pill}` : pill || '–'}</td>
       <td class="num">${sp ? fmtRp(sp.bottom) : '–'}</td>
       <td class="num">${p ? `${fmtRp(p.harga)}<br><span class="muted">${fmtDateK(p.t)}</span>` : '<span class="muted">–</span>'}</td>
       <td class="num">${gp}</td></tr>`;
@@ -507,31 +624,31 @@ function renderCross(sel) {
     const o = top ? komp.outlets[top[0]] : null;
     return `<tr data-center="${esc(code)}"><td><span class="cdot" style="--c:${CENTERS[code].color}"></span><b>${esc(code)}</b></td>
       <td class="num">${fmtInt(pc.n)}</td><td class="num"><b>${fmtInt(pc.closer)}</b><br><span class="muted">${pct(pc.closer, pc.n)}</span></td>
-      <td>${o ? `${esc(o.label)} <span class="muted">(${fmtInt(top[1])})</span>` : '–'}</td></tr>`;
+      <td>${o ? `${esc(outletName(o))} <span class="muted">(${fmtInt(top[1])})</span>` : '–'}</td></tr>`;
   }).join('');
   const outletRows = [...cs.perOutlet.entries()].filter(([, po]) => po.closer || po.near)
     .sort((a, b) => b[1].closer - a[1].closer || b[1].near - a[1].near).slice(0, 12).map(([id, po]) => {
       const o = komp.outlets[id];
       const cens = [...po.centers.entries()].sort((a, b) => b[1] - a[1]).map(([c, n]) => `${esc(c)} ${fmtInt(n)}`).join(', ');
-      return `<tr data-oid="${id}"><td><b>${esc(o.label)}</b><br><span class="muted">${esc(o.region)}${o.trackedBy.length ? ' · kompetitor utama' : ''}</span></td>
+      return `<tr data-oid="${id}"><td><b>${esc(outletName(o))}</b><br><span class="muted">${esc(o.region)}${o.trackedBy.length ? ' · kompetitor utama' : ''}</span></td>
         <td class="num"><b>${fmtInt(po.closer)}</b>${cens ? `<br><span class="muted">${cens}</span>` : ''}</td><td class="num">${fmtInt(po.near)}</td></tr>`;
     }).join('');
-  box.innerHTML = `<div class="kpi kpi-wide"><div class="k-label">Member yang tinggal lebih dekat ke cabang Studiorenang daripada ke center Sparks-nya</div>
+  box.innerHTML = `<div class="kpi kpi-wide"><div class="k-label">Member yang tinggal lebih dekat ke cabang kompetitor daripada ke center Sparks-nya</div>
       <p class="hero">${fmtInt(cs.closer)} <small>dari ${fmtInt(cs.total)} member (${pct(cs.closer, cs.total)})</small></p>
-      <p class="sub">Jarak garis lurus dari titik alamat. Mengikuti filter center${state.hiddenMonths.size ? ' &amp; bulan' : ''} di atas.</p></div>
+      <p class="sub">Jarak garis lurus dari titik alamat. Mengikuti filter center${state.hiddenMonths.size ? ' &amp; bulan' : ''} dan brand yang ditampilkan.</p></div>
     <div class="sec-head"><h2>Per center</h2><span class="hint">Ketuk baris untuk memilih center</span></div>
     <div class="table-wrap"><table class="tbl" id="kCrossCenters"><thead><tr><th>Center</th><th class="num">Member</th><th class="num">Lebih dekat ke kompetitor</th><th>Cabang yang paling banyak "menarik"</th></tr></thead><tbody>${centerRows}</tbody></table></div>
     <div class="sec-head"><h2>Cabang paling bersinggungan</h2><span class="hint">Ketuk baris untuk melihat di peta</span></div>
-    <div class="table-wrap"><table class="tbl" id="kCrossOutlets"><thead><tr><th>Cabang Studiorenang</th><th class="num">Member lebih dekat ke cabang ini</th><th class="num">Member ≤ ${kstate.radius} km</th></tr></thead><tbody>${outletRows || '<tr><td class="empty" colspan="3">Tidak ada.</td></tr>'}</tbody></table></div>`;
+    <div class="table-wrap"><table class="tbl" id="kCrossOutlets"><thead><tr><th>Cabang kompetitor</th><th class="num">Member lebih dekat ke cabang ini</th><th class="num">Member ≤ ${kstate.radius} km</th></tr></thead><tbody>${outletRows || '<tr><td class="empty" colspan="3">Tidak ada.</td></tr>'}</tbody></table></div>`;
 }
 
 function renderKompMethod() {
-  const gw = komp.outlets.find((o) => o.key === 'Grand Wisata');
+  const gw = komp.outlets.find((o) => o.ckey === knorm('Studiorenang Grand Wisata'));
   $('#kMethod').innerHTML = `
     <p><b>Harga</b> dari Google Sheet <i>Sparks Swim - Competitor Analysis</i> (tab Log Harga, Harga Sparks, Ringkasan) lewat sheet <i>Feed Kompetitor</i>, diambil oleh Apps Script. Harga per cabang = survei terakhir untuk paket itu sampai akhir bulan yang dipilih; harga Sparks = harga yang berlaku sampai akhir bulan itu. Tambah harga baru di Log Harga, aplikasi ikut berubah.</p>
-    <p><b>Cabang Studiorenang</b>: ${esc(komp.meta.source || 'daftar resmi studiorenang.com')}, lengkap dengan koordinat dan link Google Maps.</p>
-    <p><b>Jarak tempuh motor</b>: ${esc(komp.meta.routing || 'mesin rute OpenStreetMap')}. Menit = tanpa macet.${gw && motorKm(gw, 'KLM') != null ? ` Contoh: KLM ke Grand Wisata ${kmTxt(motorKm(gw, 'KLM'))} (±${motorMin(gw, 'KLM')} mnt), garis lurus ${kmTxt(straightKm(gw, 'KLM'))}.` : ''} Rute dihitung untuk 6 center awal; center baru memakai jarak garis lurus sampai rutenya dihitung.</p>
-    <p><b>Member vs kompetitor</b>: untuk tiap member, jarak garis lurus rumah → center Sparks-nya dibanding rumah → cabang Studiorenang terdekat.</p>
+    <p><b>Daftar cabang kompetitor</b>: ${komp.listSrc === 'sheet' ? 'tab <i>Lokasi Kompetitor</i> di sheet Competitor Analysis (tambah baris: Brand, Cabang, Alamat, Koordinat dari Google Maps). Nama untuk harga di Log Harga = "Brand Cabang", mis. "Studiorenang Grand Wisata".' : `data bawaan: ${esc(komp.meta.source || 'daftar resmi studiorenang.com')}.`}</p>
+    <p><b>Jarak tempuh motor</b>: ${esc(komp.meta.routing || 'mesin rute OpenStreetMap')}. Menit = tanpa macet.${gw && motorKm(gw, 'KLM') != null ? ` Contoh: KLM ke Grand Wisata ${kmTxt(motorKm(gw, 'KLM'))} (±${motorMin(gw, 'KLM')} mnt), garis lurus ${kmTxt(straightKm(gw, 'KLM'))}.` : ''} Rute dihitung untuk 6 center awal dan 45 cabang Studiorenang awal; center/cabang baru memakai jarak garis lurus sampai rutenya dihitung.</p>
+    <p><b>Member vs kompetitor</b>: untuk tiap member, jarak garis lurus rumah → center Sparks-nya dibanding rumah → cabang kompetitor terdekat (brand yang ditampilkan).</p>
     <p><b>Batas wilayah</b> (warna per jumlah cabang): OpenStreetMap (ODbL).</p>`;
 }
 
@@ -559,10 +676,11 @@ function loadKstate() {
     kstate.shade = !!s.shade;
     kstate.show = !!s.show;
     kstate.highlight = !!s.highlight;
+    if (Array.isArray(s.hiddenBrands)) kstate.hiddenBrands = new Set(s.hiddenBrands);
   } catch { /* abaikan */ }
 }
 function saveKstate() {
-  store.set('kompetitor.ui', JSON.stringify({ dur: kstate.dur, mode: kstate.mode, radius: kstate.radius, shade: kstate.shade, show: kstate.show, highlight: kstate.highlight }));
+  store.set('kompetitor.ui', JSON.stringify({ dur: kstate.dur, mode: kstate.mode, radius: kstate.radius, shade: kstate.shade, show: kstate.show, highlight: kstate.highlight, hiddenBrands: [...kstate.hiddenBrands] }));
 }
 
 function bindKompEvents() {
@@ -574,6 +692,8 @@ function bindKompEvents() {
   $('#kShade').addEventListener('change', (e) => { kstate.shade = e.target.checked; rerender(); });
   $('#v-komp').addEventListener('click', (e) => {
     if (e.target.closest('#kRefresh')) { refreshKompetitor(); return; }
+    const br = e.target.closest('[data-brand]');
+    if (br) { toggleBrand(br.dataset.brand); return; }
     const go = e.target.closest('[data-goto]');
     if (go) { setView(go.dataset.goto); return; }
     const oid = e.target.closest('[data-oid]');
@@ -581,6 +701,7 @@ function bindKompEvents() {
     const cen = e.target.closest('[data-center]');
     if (cen && CENTERS[cen.dataset.center]) selectCenter(cen.dataset.center);
   });
+  $('#kLegend').addEventListener('click', (e) => { const br = e.target.closest('[data-brand]'); if (br) toggleBrand(br.dataset.brand); });
   $('#btnKomp').addEventListener('click', () => { kstate.show = !kstate.show; syncKompToggle(); rerender(); });
   $('#btnKompHi').addEventListener('click', () => { kstate.highlight = !kstate.highlight; syncKompToggle(); resetMarkers(); rerender(); });
   syncKompToggle();

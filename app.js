@@ -1054,7 +1054,7 @@ function renderRegions(sel) {
     }).bindPopup(`<div class="pop"><h3>${esc(g.kel)}</h3><p style="margin:0 0 6px" class="muted">${esc([g.kec, g.city].filter(Boolean).join(', '))}</p>
       <dl><dt>Member</dt><dd><b>${fmtInt(g.n)}</b> (${fmtPct(g.n / total)})</dd>
       ${g.dn ? `<dt>Rata-rata</dt><dd>${fmtKm(g.dsum / g.dn)} km ke center</dd>` : ''}
-      ${(() => { const n = komp.ready ? nearestOutletOf(`kel:${it.i}`, { lat: it.cy / 1e4, lon: it.cx / 1e4 }) : null; return n && n.id != null ? `<dt>Studiorenang</dt><dd>${esc(komp.outlets[n.id].label)} · ${fmtKm(n.d)} km</dd>` : ''; })()}
+      ${(() => { const n = komp.ready ? nearestOutletOf(`kel:${it.i}`, { lat: it.cy / 1e4, lon: it.cx / 1e4 }) : null; return n && n.id != null ? `<dt>Kompetitor</dt><dd>${esc(outletName(komp.outlets[n.id]))} · ${fmtKm(n.d)} km</dd>` : ''; })()}
       ${g.approx ? `<dt>Perkiraan</dt><dd>${fmtInt(g.approx)} alamat</dd>` : ''}</dl></div>`, { maxWidth: 260 })
       .addTo(regionLayer);
   }

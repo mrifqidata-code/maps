@@ -66,7 +66,7 @@
         <div class="kpis-mini" id="miniKpis"></div>
         <div class="map-tools">
           <button type="button" class="toggle-btn" id="btnKomp" aria-pressed="false"><span class="omark-mini" aria-hidden="true"></span>Kompetitor</button>
-          <button type="button" class="toggle-btn" id="btnKompHi" aria-pressed="false" hidden title="Sorot member yang lebih dekat ke cabang Studiorenang daripada ke center Sparks-nya">Sorot rawan</button>
+          <button type="button" class="toggle-btn" id="btnKompHi" aria-pressed="false" hidden title="Sorot member yang lebih dekat ke cabang kompetitor daripada ke center Sparks-nya">Sorot rawan</button>
         </div>
         <div class="seg" role="group" aria-label="Mode tampilan peta">
           <button type="button" data-mode="cluster" aria-pressed="true">Cluster</button>
@@ -79,6 +79,7 @@
         <div id="map"></div>
       </div>
       <div id="legend" class="legend" aria-live="polite"></div>
+      <div id="kLegend" class="legend" hidden></div>
     </section>
 
     <!-- ============ STATISTIK ============ -->
@@ -118,11 +119,13 @@
     <!-- ============ KOMPETITOR ============ -->
     <section class="view" id="v-komp" hidden>
       <div id="kSrc" class="ksrc" role="status" aria-live="polite"></div>
+      <div id="kList" class="klist"></div>
       <div class="kcontrols">
         <label class="grp"><span>Periode</span><select id="kMonth" aria-label="Pilih bulan"></select></label>
         <div class="grp"><span>Paket</span><div class="seg" id="kDur" role="group" aria-label="Durasi paket"></div></div>
         <div class="grp"><span>Jarak</span><div class="seg" id="kMode" role="group" aria-label="Cara menghitung jarak"></div></div>
         <div class="grp"><span>Maks.</span><div class="seg" id="kRadius" role="group" aria-label="Batas jarak"></div></div>
+        <div class="grp" id="kBrandGrp" hidden><span>Brand</span><div class="seg multi" id="kBrands" role="group" aria-label="Brand yang ditampilkan"></div></div>
         <label class="grp check"><input type="checkbox" id="kShade"> Warnai wilayah per jumlah cabang (di peta)</label>
       </div>
       <article class="card" id="kPanel"></article>

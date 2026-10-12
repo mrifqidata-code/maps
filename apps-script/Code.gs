@@ -11,7 +11,8 @@
  * Daftar center ada di tab "Centers" (dibuat otomatis dengan 6 center awal). Tambah center
  * baru cukup dengan menambah baris di tab itu.
  * Harga kompetitor dibaca dari sheet "Feed Kompetitor" (KOMPETITOR_FEED_ID) — tidak pernah
- * disimpan di repo GitHub.
+ * disimpan di repo GitHub. Daftar cabang kompetitor (semua brand) dibaca dari tab
+ * "Lokasi Kompetitor" di sheet Competitor Analysis (dibuat otomatis saat pertama dipakai).
  *
  * Cara pasang: lihat README di repo (bagian "Sinkron HP & laptop").
  */
@@ -34,6 +35,10 @@ const CENTERS_SEED = [
 
 // Sheet "Feed Kompetitor (dari Competitor Analysis)". Kosongkan bila tidak dipakai.
 const KOMPETITOR_FEED_ID = '1JCvIrXRF0n9yJnucMUj2hOxuPJjjUY8T8tKi0tjvxyM';
+// Sheet "Sparks Swim - Competitor Analysis": daftar cabang kompetitor ada di tab LOKASI_SHEET.
+const KOMPETITOR_SHEET_ID = '1plqm0d-1sBAig0pzL3PG7jdanmrjSqggSCYcW06aEYQ';
+const LOKASI_SHEET = 'Lokasi Kompetitor';
+const LOKASI_HEADER = ['Brand', 'Cabang', 'Alamat', 'Koordinat (lat, lon)', 'Link Google Maps', 'Aktif (TRUE/FALSE)', 'Catatan'];
 
 function doGet(e) {
   const p = (e && e.parameter) || {};
@@ -57,7 +62,42 @@ function doGet(e) {
       out.kompetitorError = 'Feed Kompetitor tidak bisa dibuka: ' + err.message;
     }
   }
+  if ((action === 'all' || action === 'kompetitor') && KOMPETITOR_SHEET_ID) {
+    try {
+      const sh = SpreadsheetApp.openById(KOMPETITOR_SHEET_ID).getSheetByName(LOKASI_SHEET);
+      if (!sh) out.lokasiMissing = true;
+      else out.lokasi = sh.getLastRow() < 2 ? [] : sh.getRange(2, 1, sh.getLastRow() - 1, LOKASI_HEADER.length).getDisplayValues();
+    } catch (err) {
+      out.lokasiError = 'Tab "' + LOKASI_SHEET + '" tidak bisa dibuka: ' + err.message;
+    }
+  }
   return json_(out);
+}
+
+// Membuat tab "Lokasi Kompetitor" sekali, diisi daftar cabang yang dikirim app (hanya bila tab belum ada).
+function seedLokasi_(rows) {
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    const ss = SpreadsheetApp.openById(KOMPETITOR_SHEET_ID);
+    if (ss.getSheetByName(LOKASI_SHEET)) return json_({ ok: true, created: false });
+    const clean = rows.filter(function (r) { return Array.isArray(r) && r.length >= 4; }).slice(0, 2000)
+      .map(function (r) {
+        return LOKASI_HEADER.map(function (_, i) {
+          if (i === 5) return r[i] !== false;
+          if (i === 3) return String(r[i] == null ? '' : r[i]).replace(/^=+/, ''); // kolom teks; jangan diberi awalan '
+          return safe_(r[i]);
+        });
+      });
+    const sh = ss.insertSheet(LOKASI_SHEET, ss.getNumSheets());
+    sh.getRange(1, 1, 1, LOKASI_HEADER.length).setValues([LOKASI_HEADER]).setFontWeight('bold');
+    sh.getRange('D:D').setNumberFormat('@'); // koordinat sebagai teks, mis. "-6.2345, 106.8765"
+    if (clean.length) sh.getRange(2, 1, clean.length, LOKASI_HEADER.length).setValues(clean);
+    sh.setFrozenRows(1);
+    return json_({ ok: true, created: true, rows: clean.length });
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 function readCenters_(ss) {
@@ -87,6 +127,7 @@ function doPost(e) {
   } catch (err) {
     return json_({ ok: false, error: 'Body bukan JSON.' });
   }
+  if (body.action === 'seedLokasi' && Array.isArray(body.rows) && KOMPETITOR_SHEET_ID) return seedLokasi_(body.rows);
   if (body.action !== 'cache' || !Array.isArray(body.entries)) return json_({ ok: false, error: 'Request tidak dikenal.' });
 
   const lock = LockService.getScriptLock();

@@ -10,7 +10,7 @@ Aplikasi (bisa di-install di HP & laptop) untuk memvisualisasikan persebaran **m
   - Ketuk pin → nama (atau Sparks ID bila kolomnya ada), center, tanggal regis, alamat, jarak ke center, kelurahan
 - **Statistik**: member terjauh (*longest range*), rata-rata & median jarak, ringkasan per center
 - **Kelurahan**: jumlah member per kelurahan resmi (batas wilayah Dukcapil), terbanyak di atas (ketuk baris → batas kelurahan di peta)
-- **Kompetitor** (dari aplikasi *Persebaran Kompetitor*): 45 cabang Studiorenang dengan jarak tempuh motor/garis lurus, harga survei per periode & paket (3/6/12 bulan), harga Sparks (pitch/bottom), gap per sesi, kompetitor utama per center, ringkasan per center. Tombol **Kompetitor** di tab Peta menampilkan cabang + label harga di peta (dan rute motor/radius).
+- **Kompetitor** (dari aplikasi *Persebaran Kompetitor*): cabang semua brand kompetitor (awal: 45 cabang Studiorenang) dengan jarak tempuh motor/garis lurus, harga survei per periode & paket (3/6/12 bulan), harga Sparks (pitch/bottom), gap per sesi, kompetitor utama per center, ringkasan per center. Tombol **Kompetitor** di tab Peta menampilkan cabang + label harga di peta (dan rute motor/radius).
 - **Member vs kompetitor**: berapa member yang rumahnya lebih dekat ke cabang Studiorenang daripada ke center Sparks-nya, per center dan per cabang; tombol **Sorot rawan** menandai member tersebut di peta.
 - **Data**: sumber data & sinkron, install aplikasi, server geocoding, cache, dan daftar alamat yang gagal di-geocode (bisa diedit & dicari ulang)
 - Jarak dihitung dengan **haversine** (garis lurus) dari lokasi member ke center-nya masing-masing.
@@ -54,6 +54,19 @@ Saat script pertama kali dipanggil, tab **Centers** dibuat otomatis di sheet mem
 - **Nonaktifkan center**: isi kolom Aktif dengan `FALSE`.
 - Buka ulang aplikasi: center baru langsung muncul di filter, peta, statistik, dan tab Kompetitor. Alamat member center baru di-geocode ulang di sekitar center tersebut.
 - Jarak tempuh motor & rute ke cabang kompetitor sudah dihitung untuk 6 center awal; center baru memakai jarak garis lurus sampai rutenya dihitung ulang.
+
+### Daftar cabang kompetitor (tab "Lokasi Kompetitor")
+
+Daftar cabang semua brand kompetitor ada di tab **Lokasi Kompetitor** di Google Sheet [Sparks Swim - Competitor Analysis](https://docs.google.com/spreadsheets/d/1plqm0d-1sBAig0pzL3PG7jdanmrjSqggSCYcW06aEYQ/edit). Tab ini dibuat otomatis (berisi 45 cabang Studiorenang) saat app pertama kali tersambung setelah script diperbarui.
+
+Kolom: `Brand | Cabang | Alamat | Koordinat (lat, lon) | Link Google Maps | Aktif (TRUE/FALSE) | Catatan`
+
+- **Tambah cabang / brand baru**: tambah satu baris. Koordinat: di Google Maps tekan lama lokasinya, ketuk angka `-6.xxxx, 106.xxxx` (tersalin), tempel ke kolom Koordinat. Link Maps boleh kosong.
+- **Cabang tutup**: isi Aktif dengan `FALSE` (jangan hapus barisnya).
+- **Harga**: di Log Harga tulis nama kompetitor sebagai `Brand Cabang`, persis sama, mis. `Studiorenang Grand Wisata` atau `Wepool Kolam Cibubur`. Kompetitor utama per center (tab Ringkasan) juga memakai nama ini.
+- Di app tab Kompetitor tekan **Muat ulang harga** (atau buka ulang app). Brand bisa disaring dengan tombol Brand di tab Kompetitor atau legenda di bawah peta.
+- Cabang baru memakai jarak garis lurus; jarak tempuh motor hanya tersedia untuk 45 cabang Studiorenang awal × 6 center awal.
+- Edit di **Google Sheet**, bukan di file Excel (.xlsx) di laptop: app hanya membaca versi Google Sheet.
 
 ### Harga kompetitor
 
