@@ -348,3 +348,4 @@ details.alt summary { cursor: pointer; font-weight: 600; font-size: 14px; color:
 .seg.multi button { display: inline-flex; align-items: center; gap: 6px; }
 .seg.multi button[aria-pressed="false"] { opacity: .5; text-decoration: line-through; }
 .bdot { width: 9px; height: 9px; background: var(--c); transform: rotate(45deg); border-radius: 2px; display: inline-block; }
+.pop .overlap-note { margin: 0 0 6px; padding: 4px 8px; border-radius: 6px; background: #fde4ee; color: #a3184f; font-size: 12px; font-weight: 650; }

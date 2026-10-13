@@ -829,6 +829,23 @@ let regionLayer;
 let highlightLayer;
 let regionBreaks = [];
 const REGION_COLORS = ['#b7d3f6', '#6da7ec', '#2a78d6', '#1c5cab', '#0d366b'];
+const OVERLAP_COLOR = '#f06292'; // kelurahan yang juga dihuni member center lain
+let regionOverlapCount = 0;
+
+// Jumlah member per center di tiap kelurahan (semua center, tanpa filter) untuk mendeteksi irisan.
+function centersPerKel() {
+  const out = new Map();
+  for (const m of state.members) {
+    if (!CENTERS[m.center]) continue;
+    const g = cache.get(m.key);
+    const ad = adminFor(m.key, g, m.addr);
+    if (!ad || ad.idx == null) continue;
+    let byC = out.get(ad.idx);
+    if (!byC) { byC = new Map(); out.set(ad.idx, byC); }
+    byC.set(m.center, (byC.get(m.center) || 0) + 1);
+  }
+  return out;
+}
 const markers = new Map(); // member id -> circleMarker (dipakai ulang antar-render)
 
 function initMap() {
@@ -1070,14 +1087,29 @@ function renderRegions(sel) {
   regionBreaks = [...new Set(br)].sort((a, b) => a - b);
   const offset = REGION_COLORS.length - regionBreaks.length;
   const total = sel.mapped.length || 1;
+  // Irisan: semua center → kelurahan berisi member ≥ 2 center; satu center → kelurahan center ini
+  // yang juga berisi member center lain. Diwarnai merah muda.
+  const perKel = centersPerKel();
+  const isOverlap = (idx) => {
+    const byC = perKel.get(idx);
+    if (!byC) return false;
+    return state.center === 'ALL' ? byC.size >= 2 : [...byC.keys()].some((c) => c !== state.center);
+  };
+  regionOverlapCount = 0;
   for (const g of groups) {
     const it = kelDb.items[g.idx];
     const cls = regionBreaks.findIndex((b) => g.n <= b);
+    const overlap = isOverlap(g.idx);
+    if (overlap) regionOverlapCount++;
+    const byC = perKel.get(g.idx);
+    const mix = byC && byC.size > 1 ? [...byC.entries()].sort((a, b) => b[1] - a[1]).map(([c, n]) => `${esc(c)} ${fmtInt(n)}`).join(' · ') : '';
     L.polygon(kelLatLngs(it), {
       color: '#ffffff', weight: 1, opacity: 0.9,
-      fillColor: REGION_COLORS[offset + Math.max(0, cls)], fillOpacity: 0.72,
+      fillColor: overlap ? OVERLAP_COLOR : REGION_COLORS[offset + Math.max(0, cls)], fillOpacity: overlap ? 0.8 : 0.72,
     }).bindPopup(`<div class="pop"><h3>${esc(g.kel)}</h3><p style="margin:0 0 6px" class="muted">${esc([g.kec, g.city].filter(Boolean).join(', '))}</p>
+      ${overlap ? '<p class="overlap-note">Beririsan dengan center lain</p>' : ''}
       <dl><dt>Member</dt><dd><b>${fmtInt(g.n)}</b> (${fmtPct(g.n / total)})</dd>
+      ${mix ? `<dt>Per center</dt><dd>${mix}</dd>` : ''}
       ${g.dn ? `<dt>Rata-rata</dt><dd>${fmtKm(g.dsum / g.dn)} km ke center</dd>` : ''}
       ${(() => { const n = komp.ready ? nearestOutletOf(`kel:${it.i}`, { lat: it.cy / 1e4, lon: it.cx / 1e4 }) : null; return n && n.id != null ? `<dt>Kompetitor</dt><dd>${esc(outletName(komp.outlets[n.id]))} · ${fmtKm(n.d)} km</dd>` : ''; })()}
       ${g.approx ? `<dt>Perkiraan</dt><dd>${fmtInt(g.approx)} alamat</dd>` : ''}</dl></div>`, { maxWidth: 260 })
@@ -1101,7 +1133,8 @@ function renderLegend() {
     div.innerHTML = `<span class="lg-title">Member per kelurahan</span>${regionBreaks.map((b, i) => {
       const lo = i ? regionBreaks[i - 1] + 1 : 1;
       return `<span class="row static"><span class="sw sq" style="--c:${REGION_COLORS[i + REGION_COLORS.length - regionBreaks.length]}"></span>${lo === b ? fmtInt(b) : `${fmtInt(lo)}–${fmtInt(b)}`}</span>`;
-    }).join('')}<p class="hint">Batas wilayah resmi Dukcapil. Ketuk kelurahan untuk detail.</p>`;
+    }).join('')}<span class="row static"><span class="sw sq" style="--c:${OVERLAP_COLOR}"></span>Beririsan dengan center lain <span class="n">${fmtInt(regionOverlapCount)}</span></span>
+    <p class="hint">${state.center === 'ALL' ? 'Merah muda = kelurahan yang dihuni member dari 2 center atau lebih.' : `Merah muda = kelurahan ${esc(state.center)} yang juga dihuni member center lain.`} Batas wilayah resmi Dukcapil. Ketuk kelurahan untuk detail.</p>`;
     return;
   }
   if (state.center === 'ALL') {
