@@ -2,7 +2,7 @@
  * File app (index/app.js/app.css) diambil dari jaringan dulu supaya update langsung terpakai;
  * library di vendor/ dan ikon diambil dari cache. Request ke server lain (peta, geocoding,
  * Google Sheet) tidak disentuh. */
-const VERSION = 'sebaran-v7';
+const VERSION = 'sebaran-v8';
 const SHELL = [
   './', 'index.html', 'app.css', 'app.js', 'kompetitor.js', 'manifest.webmanifest',
   'icons/icon.svg', 'icons/icon-192.png', 'icons/icon-512.png',
@@ -37,7 +37,8 @@ self.addEventListener('fetch', (e) => {
     })));
     return;
   }
-  e.respondWith(fetch(req).then((res) => {
+  // File app selalu dicek ke server (revalidasi cepat), supaya update langsung terpakai saat app dibuka.
+  e.respondWith(fetch(req, { cache: 'no-cache' }).then((res) => {
     if (res.ok) { const copy = res.clone(); caches.open(VERSION).then((c) => c.put(req, copy)); }
     return res;
   }).catch(() => caches.match(req, { ignoreSearch: true }).then((hit) => hit || caches.match('index.html'))));
